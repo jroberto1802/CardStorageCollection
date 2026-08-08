@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, BookmarkPlus, Check, Loader2, Package } from 'lucide-react'
+import { ArrowLeft, BookmarkPlus, Check, Loader2, Minus, Package, Plus } from 'lucide-react'
 import { useSettings } from '@/contexts/SettingsContext'
 import { getCardById } from '@/services/catalogService'
 import {
   addToCollection,
   findCollectionItem,
-  removeFromCollection,
+  updateCollectionQuantity,
 } from '@/services/collectionService'
 import {
   invokeMirrorCardFull,
@@ -188,19 +188,23 @@ export function CardDetailPage() {
     }
   }
 
-  async function handleRemoveFromCollection() {
+  async function handleDecrementCollection() {
     if (!ownedItem) return
-    if (!window.confirm('Remover esta impressão da coleção?')) return
 
     setCollectionBusy(true)
     setCollectionMessage(null)
     try {
-      await removeFromCollection(ownedItem.id)
-      setOwnedItem(null)
-      setCollectionMessage('Removida da coleção.')
+      const nextQty = ownedItem.quantity - 1
+      const updated = await updateCollectionQuantity(ownedItem.id, nextQty)
+      setOwnedItem(updated)
+      setCollectionMessage(
+        updated
+          ? `Quantidade atualizada para ${updated.quantity}.`
+          : 'Removida da coleção.',
+      )
     } catch (err) {
       setCollectionMessage(
-        err instanceof Error ? err.message : 'Falha ao remover',
+        err instanceof Error ? err.message : 'Falha ao atualizar quantidade',
       )
     } finally {
       setCollectionBusy(false)
@@ -283,36 +287,43 @@ export function CardDetailPage() {
                 <p className="inline-flex items-center gap-1.5 text-sm text-[var(--color-success)]">
                   <Check className="h-4 w-4" />
                   Na coleção
-                  {ownedItem.quantity > 1 ? ` (×${ownedItem.quantity})` : ''}
                 </p>
-                <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-center gap-2">
                   <button
                     type="button"
-                    disabled={collectionBusy || !selectedSet}
-                    onClick={() => void handleAddToCollection()}
-                    className="w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text)] transition hover:bg-[var(--color-surface-2)] disabled:opacity-50"
+                    title="Remover 1"
+                    disabled={collectionBusy}
+                    onClick={() => void handleDecrementCollection()}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 hover:text-red-300 disabled:opacity-50"
                   >
                     {collectionBusy ? (
-                      <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      'Adicionar mais uma'
+                      <Minus className="h-4 w-4" />
                     )}
                   </button>
+                  <span
+                    className="min-w-10 text-center text-lg font-semibold tabular-nums"
+                    aria-live="polite"
+                  >
+                    {ownedItem.quantity}
+                  </span>
                   <button
                     type="button"
-                    disabled={collectionBusy}
-                    onClick={() => void handleRemoveFromCollection()}
-                    className="w-full rounded-lg border border-[var(--color-danger)]/40 px-3 py-2 text-sm text-red-300 transition hover:bg-[var(--color-danger)]/10 disabled:opacity-50"
+                    title="Adicionar 1"
+                    disabled={collectionBusy || !selectedSet}
+                    onClick={() => void handleAddToCollection()}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:opacity-50"
                   >
-                    Remover da coleção
+                    <Plus className="h-4 w-4" />
                   </button>
-                  <Link
-                    to="/collection"
-                    className="text-center text-xs text-[var(--color-accent)] hover:underline"
-                  >
-                    Ver minha coleção
-                  </Link>
                 </div>
+                <Link
+                  to="/collection"
+                  className="block text-center text-xs text-[var(--color-accent)] hover:underline"
+                >
+                  Ver minha coleção
+                </Link>
               </div>
             ) : (
               <button
