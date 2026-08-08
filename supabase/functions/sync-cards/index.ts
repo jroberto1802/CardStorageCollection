@@ -51,7 +51,50 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-function mapCard(card: YgoCard, language: AppLanguage) {
+const STORAGE_PUBLIC_MARKER = '/storage/v1/object/public/card-images/'
+
+interface CardImageRow {
+  id?: number
+  image_url?: string
+  image_url_small?: string
+  image_url_cropped?: string
+  [key: string]: unknown
+}
+
+function isHostedImageUrl(url: string | undefined | null): boolean {
+  if (!url) return false
+  return url.includes(STORAGE_PUBLIC_MARKER)
+}
+
+/** Preserva URLs já espelhadas no Storage para não reintroduzir hotlink YGO. */
+function mergeCardImages(incoming: unknown, existing: unknown): unknown {
+  if (!Array.isArray(incoming)) return existing ?? incoming
+  if (!Array.isArray(existing)) return incoming
+
+  const existingById = new Map<number, CardImageRow>()
+  for (const item of existing) {
+    if (item && typeof item === 'object' && typeof (item as CardImageRow).id === 'number') {
+      existingById.set((item as CardImageRow).id!, item as CardImageRow)
+    }
+  }
+
+  return (incoming as CardImageRow[]).map((img) => {
+    const prev = typeof img.id === 'number' ? existingById.get(img.id) : undefined
+    if (!prev) return img
+    return {
+      ...img,
+      image_url: isHostedImageUrl(prev.image_url) ? prev.image_url : img.image_url,
+      image_url_small: isHostedImageUrl(prev.image_url_small)
+        ? prev.image_url_small
+        : img.image_url_small,
+      image_url_cropped: isHostedImageUrl(prev.image_url_cropped)
+        ? prev.image_url_cropped
+        : img.image_url_cropped,
+    }
+  })
+}
+
+function mapCard(card: YgoCard, language: AppLanguage, existingImages?: unknown) {
   const now = new Date().toISOString()
   return {
     id: card.id,
@@ -70,7 +113,7 @@ function mapCard(card: YgoCard, language: AppLanguage) {
     linkval: card.linkval ?? null,
     linkmarkers: card.linkmarkers ?? null,
     ygoprodeck_url: card.ygoprodeck_url ?? null,
-    card_images: card.card_images ?? null,
+    card_images: mergeCardImages(card.card_images ?? null, existingImages),
     card_sets: card.card_sets ?? null,
     card_prices: card.card_prices ?? null,
     banlist_info: card.banlist_info ?? null,
@@ -211,7 +254,23 @@ Deno.serve(async (req) => {
         break
       }
 
-      const rows = page.map((card) => mapCard(card, language))
+      const pageIds = page.map((card) => card.id)
+      const existingImageByKey = new Map<string, unknown>()
+      if (pageIds.length > 0) {
+        const { data: existingRows } = await admin
+          .from('cards')
+          .select('id, language, card_images')
+          .eq('language', language)
+          .in('id', pageIds)
+
+        for (const row of existingRows ?? []) {
+          existingImageByKey.set(`${row.id}:${row.language}`, row.card_images)
+        }
+      }
+
+      const rows = page.map((card) =>
+        mapCard(card, language, existingImageByKey.get(`${card.id}:${language}`)),
+      )
 
       for (let i = 0; i < rows.length; i += UPSERT_BATCH_SIZE) {
         const batch = rows.slice(i, i + UPSERT_BATCH_SIZE)

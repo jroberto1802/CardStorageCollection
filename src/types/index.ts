@@ -18,6 +18,30 @@ export interface SyncCardsResponse {
   error?: string
 }
 
+export interface SyncCardImagesResponse {
+  success: boolean
+  mode?: 'small' | 'full' | 'status'
+  language?: AppLanguage
+  mirrored?: number
+  failed?: number
+  skipped?: number
+  cards_processed?: number
+  has_more?: boolean
+  after_id?: number
+  storage_bytes?: number
+  storage_soft_limit_bytes?: number
+  stopped_for_quota?: boolean
+  pending_small?: number | null
+  sample_scanned?: number
+  near_quota?: boolean
+  card_images?: CardImage[]
+  message?: string
+  error?: string
+  errors?: string[]
+}
+
+export type SyncCardImagesStatus = SyncCardImagesResponse
+
 export interface CardImage {
   id: number
   image_url: string

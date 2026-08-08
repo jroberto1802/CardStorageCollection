@@ -68,44 +68,54 @@ export function DeckZonePanel({
         style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
         data-zone={zone}
       >
-        {sorted.map((slot) => {
-          const owned = (ownedByCard?.get(slot.card_id) ?? 0) > 0
-          return (
-            <div
-              key={slot.id}
-              className={[
-                'group relative aspect-[59/86] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] transition',
-                owned ? '' : 'opacity-25',
-              ].join(' ')}
-              title={
-                owned
-                  ? slot.name
-                  : `${slot.name} (você não possui esta carta)`
-              }
-            >
-              {slot.imageUrlSmall || slot.imageUrl ? (
-                <img
-                  src={slot.imageUrlSmall ?? slot.imageUrl ?? undefined}
-                  alt={slot.name}
-                  className="h-full w-full object-cover"
-                  draggable={false}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center p-1 text-center text-[9px] text-[var(--color-muted)]">
-                  {slot.name}
-                </div>
-              )}
-              <button
-                type="button"
-                title="Remover"
-                onClick={() => onRemove(slot.id)}
-                className="absolute top-0.5 right-0.5 rounded bg-black/70 p-0.5 text-white opacity-0 transition group-hover:opacity-100 hover:bg-[var(--color-danger)]"
+        {(() => {
+          const usedOwned = new Map<number, number>()
+          return sorted.map((slot) => {
+            // Acende só até a qtd. possuída: 1 na coleção + 2 no deck → 1 acesa, 1 apagada
+            const ownedQty = ownedByCard?.get(slot.card_id) ?? 0
+            const used = usedOwned.get(slot.card_id) ?? 0
+            const coveredByCollection = used < ownedQty
+            usedOwned.set(slot.card_id, used + 1)
+
+            return (
+              <div
+                key={slot.id}
+                className={[
+                  'group relative aspect-[59/86] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] transition',
+                  coveredByCollection ? '' : 'opacity-25',
+                ].join(' ')}
+                title={
+                  coveredByCollection
+                    ? slot.name
+                    : ownedQty === 0
+                      ? `${slot.name} (você não possui esta carta)`
+                      : `${slot.name} (possui ${ownedQty}; cópia além do inventário)`
+                }
               >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          )
-        })}
+                {slot.imageUrlSmall || slot.imageUrl ? (
+                  <img
+                    src={slot.imageUrlSmall ?? slot.imageUrl ?? undefined}
+                    alt={slot.name}
+                    className="h-full w-full object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center p-1 text-center text-[9px] text-[var(--color-muted)]">
+                    {slot.name}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  title="Remover"
+                  onClick={() => onRemove(slot.id)}
+                  className="absolute top-0.5 right-0.5 rounded bg-black/70 p-0.5 text-white opacity-0 transition group-hover:opacity-100 hover:bg-[var(--color-danger)]"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )
+          })
+        })()}
 
         {sorted.length === 0 && (
           <div className="col-span-full flex items-center justify-center py-8 text-xs text-[var(--color-muted)]">

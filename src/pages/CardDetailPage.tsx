@@ -8,7 +8,11 @@ import {
   findCollectionItem,
   removeFromCollection,
 } from '@/services/collectionService'
-import type { AppLanguage, Card, CardSet, CollectionItem } from '@/types'
+import {
+  invokeMirrorCardFull,
+  isYgoHostedUrl,
+} from '@/services/imageSyncService'
+import type { AppLanguage, Card, CardImage, CardSet, CollectionItem } from '@/types'
 import {
   detectRegion,
   getCardCategory,
@@ -61,12 +65,31 @@ export function CardDetailPage() {
       setError(null)
 
       try {
-        const data = await getCardById(id, language)
+        let data = await getCardById(id, language)
         if (!mounted) return
         if (!data) {
           setError('Carta não encontrada neste idioma.')
           setCard(null)
         } else {
+          // Full sob demanda: se ainda aponta para YGOPRODeck, espelha no Storage
+          const primary = getPrimaryImage(data)
+          if (isYgoHostedUrl(primary.full)) {
+            const mirror = await invokeMirrorCardFull({
+              language: data.language,
+              cardId: data.id,
+            })
+            if (mirror.success && mirror.card_images) {
+              data = {
+                ...data,
+                card_images: mirror.card_images as CardImage[],
+              }
+            } else if (mirror.success) {
+              const refreshed = await getCardById(data.id, data.language)
+              if (refreshed) data = refreshed
+            }
+          }
+
+          if (!mounted) return
           setCard(data)
           // Se caiu no fallback EN, reflete na URL para links/coleção
           if (data.language !== language && searchParams.get('lang') !== data.language) {
