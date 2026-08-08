@@ -207,7 +207,7 @@ export function AddToCollectionModal({
       })
       setSuccess('Carta adicionada à coleção!')
       onAdded()
-      setTimeout(() => onClose(), 700)
+      // Mantém o modal aberto e preserva a busca para adicionar mais cartas
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao salvar')
     } finally {

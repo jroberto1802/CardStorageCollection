@@ -14,8 +14,10 @@ import { FilterPanel } from '@/components/catalog/FilterPanel'
 import { CardGrid } from '@/components/catalog/CardGrid'
 import { CatalogListView } from '@/components/catalog/CatalogListView'
 import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
+import { GridSizeControl } from '@/components/common/GridSizeControl'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useDebounce } from '@/hooks/useDebounce'
+import { gridCardSizeClass, useGridCardSize } from '@/hooks/useGridCardSize'
 import {
   getDistinctRarities,
   getDistinctSetNames,
@@ -61,6 +63,7 @@ export function HomePage() {
   const [sort, setSort] = useState<SortOption>('name_asc')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [viewMode, setViewMode] = useState<CatalogViewMode>('grid')
+  const { gridSize, setGridSize } = useGridCardSize()
   const [page, setPage] = useState(0)
 
   const [items, setItems] = useState<CardImpression[]>([])
@@ -253,35 +256,40 @@ export function HomePage() {
           </select>
         </label>
 
-        <div className="ml-auto flex items-center gap-1 rounded-lg border border-[var(--color-border)] p-0.5">
-          <button
-            type="button"
-            title="Quadros"
-            onClick={() => setViewMode('grid')}
-            className={[
-              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
-              viewMode === 'grid'
-                ? 'bg-[var(--color-accent)] text-white'
-                : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
-            ].join(' ')}
-          >
-            <Grid3X3 className="h-4 w-4" />
-            <span className="hidden sm:inline">Quadros</span>
-          </button>
-          <button
-            type="button"
-            title="Lista"
-            onClick={() => setViewMode('list')}
-            className={[
-              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
-              viewMode === 'list'
-                ? 'bg-[var(--color-accent)] text-white'
-                : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
-            ].join(' ')}
-          >
-            <List className="h-4 w-4" />
-            <span className="hidden sm:inline">Lista</span>
-          </button>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {viewMode === 'grid' && (
+            <GridSizeControl value={gridSize} onChange={setGridSize} />
+          )}
+          <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border)] p-0.5">
+            <button
+              type="button"
+              title="Quadros"
+              onClick={() => setViewMode('grid')}
+              className={[
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
+                viewMode === 'grid'
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
+              ].join(' ')}
+            >
+              <Grid3X3 className="h-4 w-4" />
+              <span className="hidden sm:inline">Quadros</span>
+            </button>
+            <button
+              type="button"
+              title="Lista"
+              onClick={() => setViewMode('list')}
+              className={[
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
+                viewMode === 'list'
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
+              ].join(' ')}
+            >
+              <List className="h-4 w-4" />
+              <span className="hidden sm:inline">Lista</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -330,7 +338,7 @@ export function HomePage() {
       )}
 
       {loading && viewMode === 'grid' && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+        <div className={gridCardSizeClass(gridSize)}>
           {Array.from({ length: 12 }).map((_, index) => (
             <div
               key={index}
@@ -370,7 +378,7 @@ export function HomePage() {
       )}
 
       {!loading && items.length > 0 && viewMode === 'grid' && (
-        <CardGrid items={items} />
+        <CardGrid items={items} size={gridSize} />
       )}
 
       {!loading && items.length > 0 && viewMode === 'list' && (

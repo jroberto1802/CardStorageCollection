@@ -4,8 +4,10 @@ import { AddToCollectionModal } from '@/components/collection/AddToCollectionMod
 import { CollectionAlbumView } from '@/components/collection/CollectionAlbumView'
 import { CollectionGridView } from '@/components/collection/CollectionGridView'
 import { CollectionListView } from '@/components/collection/CollectionListView'
+import { GridSizeControl } from '@/components/common/GridSizeControl'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useGridCardSize } from '@/hooks/useGridCardSize'
 import { getDistinctSetNames } from '@/services/catalogService'
 import {
   buildAlbumSlots,
@@ -29,6 +31,7 @@ const VIEW_OPTIONS: { value: CollectionViewMode; label: string; icon: typeof Lis
 export function CollectionPage() {
   const { language } = useSettings()
   const [view, setView] = useState<CollectionViewMode>('grid')
+  const { gridSize, setGridSize } = useGridCardSize()
   const [items, setItems] = useState<CollectionItemWithCard[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -181,6 +184,11 @@ export function CollectionPage() {
             </button>
           )
         })}
+        {view === 'grid' && (
+          <div className="ml-auto">
+            <GridSizeControl value={gridSize} onChange={setGridSize} />
+          </div>
+        )}
       </div>
 
       {view === 'album' && (
@@ -241,7 +249,11 @@ export function CollectionPage() {
         <CollectionListView items={items} onRemove={(id) => void handleRemove(id)} />
       )}
       {!loading && view === 'grid' && items.length > 0 && (
-        <CollectionGridView items={items} onRemove={(id) => void handleRemove(id)} />
+        <CollectionGridView
+          items={items}
+          size={gridSize}
+          onRemove={(id) => void handleRemove(id)}
+        />
       )}
       {view === 'album' && (
         <CollectionAlbumView

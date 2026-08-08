@@ -215,6 +215,9 @@ export interface CollectionItemWithCard extends CollectionItem {
 
 export type CollectionViewMode = 'list' | 'grid' | 'album'
 
+/** Tamanho dos cards na visualização por quadros (Início / Coleção) */
+export type GridCardSize = 'pp' | 'sm' | 'md' | 'lg'
+
 export interface AddToCollectionInput {
   card_id: number
   language: AppLanguage

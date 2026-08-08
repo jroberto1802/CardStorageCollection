@@ -1,16 +1,22 @@
 import { Link } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
-import type { CollectionItemWithCard } from '@/types'
+import type { CollectionItemWithCard, GridCardSize } from '@/types'
+import { gridCardSizeClass } from '@/hooks/useGridCardSize'
 import { getPrimaryImage } from '@/utils/cardHelpers'
 
 interface CollectionGridViewProps {
   items: CollectionItemWithCard[]
   onRemove: (id: string) => void
+  size?: GridCardSize
 }
 
-export function CollectionGridView({ items, onRemove }: CollectionGridViewProps) {
+export function CollectionGridView({
+  items,
+  onRemove,
+  size = 'md',
+}: CollectionGridViewProps) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+    <div className={gridCardSizeClass(size)}>
       {items.map((item) => {
         const images = item.card ? getPrimaryImage(item.card) : { small: null, full: null }
         const name = item.card?.name ?? `Carta #${item.card_id}`
