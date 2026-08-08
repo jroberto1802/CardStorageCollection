@@ -7,10 +7,9 @@ import type {
   SortOption,
 } from '@/types'
 import {
-  computeSearchRank,
-  expandCardToImpressions,
+  cardToCatalogItem,
   looksLikeSetCode,
-  matchesFilters,
+  matchesCardFilters,
   normalizeQuery,
   parseCardSets,
   sortImpressions,
@@ -18,6 +17,14 @@ import {
 
 const FETCH_LIMIT = 300
 const SET_SCAN_LIMIT = 1000
+
+/** Só caracteres seguros para filtro JSON de set_code */
+function sanitizeSetCode(value: string): string | null {
+  const cleaned = value.trim()
+  if (!cleaned) return null
+  if (!/^[A-Za-z0-9][A-Za-z0-9\-_.]{0,31}$/.test(cleaned)) return null
+  return cleaned
+}
 
 function mapRow(row: Record<string, unknown>): Card {
   return {
@@ -56,25 +63,54 @@ function mergeCards(groups: Card[][]): Card[] {
   return [...map.values()]
 }
 
+/**
+ * Prefere cartas do idioma principal; inclui fallback só quando o id não existe no principal.
+ * Uso típico: preferred=PT, fallback=EN.
+ */
+export function mergePreferLanguage(preferred: Card[], fallback: Card[]): Card[] {
+  const map = new Map<number, Card>()
+  for (const card of preferred) {
+    map.set(card.id, card)
+  }
+  for (const card of fallback) {
+    if (!map.has(card.id)) {
+      map.set(card.id, card)
+    }
+  }
+  return [...map.values()]
+}
+
 async function fetchByExactSetCode(
   language: AppLanguage,
   setCode: string,
 ): Promise<Card[]> {
+  const safe = sanitizeSetCode(setCode)
+  if (!safe) return []
+
   const variants = Array.from(
-    new Set([setCode, setCode.toUpperCase(), setCode.toLowerCase()]),
+    new Set([safe, safe.toUpperCase(), safe.toLowerCase()]),
   )
 
   const results = await Promise.all(
     variants.map(async (code) => {
-      const { data, error } = await supabase
-        .from('cards')
-        .select('*')
-        .eq('language', language)
-        .contains('card_sets', [{ set_code: code }])
-        .limit(FETCH_LIMIT)
+      try {
+        const payload = JSON.stringify([{ set_code: code }])
+        const { data, error } = await supabase
+          .from('cards')
+          .select('*')
+          .eq('language', language)
+          .filter('card_sets', 'cs', payload)
+          .limit(FETCH_LIMIT)
 
-      if (error) throw new Error(error.message)
-      return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+        if (error) {
+          console.warn('fetchByExactSetCode:', error.message)
+          return []
+        }
+        return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+      } catch (err) {
+        console.warn('fetchByExactSetCode failed:', err)
+        return []
+      }
     }),
   )
 
@@ -179,18 +215,59 @@ async function fetchBrowsePage(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
 }
 
-function toRankedImpressions(cards: Card[], query: string): CardImpression[] {
-  return cards.flatMap((card) => {
-    const impressions = expandCardToImpressions(card)
-    if (!query) return impressions
+async function searchCardsInLanguage(
+  language: AppLanguage,
+  query: string,
+): Promise<Card[]> {
+  if (!query) return []
 
-    return impressions
-      .map((item) => ({
-        ...item,
-        searchRank: computeSearchRank(item, query, card.description),
-      }))
-      .filter((item) => item.searchRank < 99)
-  })
+  const tasks: Promise<Card[]>[] = [
+    fetchByNameExact(language, query),
+    fetchByNamePartial(language, query),
+    fetchByDescription(language, query),
+  ]
+
+  const safeSetCode = sanitizeSetCode(query)
+  if (safeSetCode && (looksLikeSetCode(query) || query.includes('-') || query.includes('_'))) {
+    tasks.push(fetchByExactSetCode(language, safeSetCode))
+    tasks.push(fetchBySetCodePartial(language, query))
+  } else if (safeSetCode && /^[A-Za-z0-9]{2,12}$/.test(query)) {
+    tasks.push(fetchByExactSetCode(language, safeSetCode))
+  }
+
+  let cards = mergeCards(await Promise.all(tasks))
+
+  if (cards.length === 0 && safeSetCode && /^[A-Za-z0-9]{2,12}$/.test(query)) {
+    cards = mergeCards([cards, await fetchBySetCodePartial(language, query)])
+  }
+
+  return cards
+}
+
+async function browseCardsInLanguage(
+  language: AppLanguage,
+  filters: CatalogFilters,
+  page: number,
+): Promise<Card[]> {
+  const browseCards: Card[] = []
+  const cardPageSize = 50
+  const pagesToLoad = Math.min(page + 3, 8)
+
+  for (let p = 0; p < pagesToLoad; p += 1) {
+    const batch = await fetchBrowsePage(language, filters, p, cardPageSize)
+    if (batch.length === 0) break
+    browseCards.push(...batch)
+    if (batch.length < cardPageSize) break
+  }
+
+  return mergeCards([browseCards])
+}
+
+/** Uma entrada por carta (não por set code) */
+function toCatalogItems(cards: Card[], query: string): CardImpression[] {
+  return cards
+    .map((card) => cardToCatalogItem(card, query))
+    .filter((item): item is CardImpression => item !== null)
 }
 
 export interface CatalogSearchResult {
@@ -213,66 +290,40 @@ export async function searchCatalog(params: {
   const pageSize = params.pageSize ?? 24
   const query = normalizeQuery(params.query)
 
-  let impressions: CardImpression[] = []
+  let cards: Card[] = []
 
   if (query) {
-    const tasks: Promise<Card[]>[] = [
-      fetchByExactSetCode(params.language, query),
-      fetchByNameExact(params.language, query),
-      fetchByNamePartial(params.language, query),
-      fetchByDescription(params.language, query),
-    ]
-
-    // Varredura de set_code (parcial/exata) quando o termo parece código de coleção
-    if (looksLikeSetCode(query) || query.includes('-') || query.includes('_')) {
-      tasks.push(fetchBySetCodePartial(params.language, query))
-    }
-
-    const firstBatch = mergeCards(await Promise.all(tasks))
-
-    // Se ainda não achou e o termo é curto alfanumérico, tenta match parcial de set_code
-    let cards = firstBatch
-    if (
-      cards.length === 0 &&
-      /^[A-Za-z0-9]{2,12}$/.test(query)
-    ) {
-      cards = mergeCards([
-        firstBatch,
-        await fetchBySetCodePartial(params.language, query),
+    if (params.language === 'pt') {
+      // PT preferencial; cartas sem tradução entram em inglês
+      const [ptCards, enCards] = await Promise.all([
+        searchCardsInLanguage('pt', query),
+        searchCardsInLanguage('en', query),
       ])
+      cards = mergePreferLanguage(ptCards, enCards)
+    } else {
+      cards = await searchCardsInLanguage('en', query)
     }
-
-    impressions = toRankedImpressions(cards, query)
+  } else if (params.language === 'pt') {
+    const [ptCards, enCards] = await Promise.all([
+      browseCardsInLanguage('pt', params.filters, page),
+      browseCardsInLanguage('en', params.filters, page),
+    ])
+    cards = mergePreferLanguage(ptCards, enCards)
   } else {
-    // Navegação do catálogo: carrega um lote maior de cartas e pagina impressões localmente
-    const browseCards: Card[] = []
-    const cardPageSize = 50
-    const pagesToLoad = Math.min(page + 3, 8)
-
-    for (let p = 0; p < pagesToLoad; p += 1) {
-      const batch = await fetchBrowsePage(
-        params.language,
-        params.filters,
-        p,
-        cardPageSize,
-      )
-      if (batch.length === 0) break
-      browseCards.push(...batch)
-      if (batch.length < cardPageSize) break
-    }
-
-    impressions = toRankedImpressions(mergeCards([browseCards]), '')
+    cards = await browseCardsInLanguage('en', params.filters, page)
   }
 
-  impressions = impressions.filter((item) => matchesFilters(item, params.filters))
-  impressions = sortImpressions(impressions, params.sort)
+  cards = cards.filter((card) => matchesCardFilters(card, params.filters))
 
-  const total = impressions.length
+  let items = toCatalogItems(cards, query)
+  items = sortImpressions(items, params.sort)
+
+  const total = items.length
   const start = page * pageSize
-  const items = impressions.slice(start, start + pageSize)
+  const pageItems = items.slice(start, start + pageSize)
 
   return {
-    items,
+    items: pageItems,
     total,
     page,
     pageSize,
@@ -283,7 +334,10 @@ export async function searchCatalog(params: {
 export async function getCardById(
   cardId: number,
   language: AppLanguage,
+  options?: { fallbackToEn?: boolean },
 ): Promise<Card | null> {
+  const fallbackToEn = options?.fallbackToEn ?? true
+
   const { data, error } = await supabase
     .from('cards')
     .select('*')
@@ -292,8 +346,91 @@ export async function getCardById(
     .maybeSingle()
 
   if (error) throw new Error(error.message)
-  if (!data) return null
-  return mapRow(data as Record<string, unknown>)
+  if (data) return mapRow(data as Record<string, unknown>)
+
+  if (fallbackToEn && language === 'pt') {
+    const { data: enData, error: enError } = await supabase
+      .from('cards')
+      .select('*')
+      .eq('id', cardId)
+      .eq('language', 'en')
+      .maybeSingle()
+
+    if (enError) throw new Error(enError.message)
+    if (enData) return mapRow(enData as Record<string, unknown>)
+  }
+
+  return null
+}
+
+/** Cartas que possuem impressão com o set_name informado (álbum) */
+export async function getCardsBySetName(
+  language: AppLanguage,
+  setName: string,
+): Promise<Card[]> {
+  const name = setName.trim()
+  if (!name) return []
+
+  async function fetchLang(lang: AppLanguage): Promise<Card[]> {
+    const payload = JSON.stringify([{ set_name: name }])
+    const { data, error } = await supabase
+      .from('cards')
+      .select('*')
+      .eq('language', lang)
+      .filter('card_sets', 'cs', payload)
+      .limit(500)
+
+    if (error) throw new Error(error.message)
+
+    return (data ?? [])
+      .map((row) => mapRow(row as Record<string, unknown>))
+      .filter((card) =>
+        parseCardSets(card.card_sets).some(
+          (set) => set.set_name.toLowerCase() === name.toLowerCase(),
+        ),
+      )
+  }
+
+  if (language === 'pt') {
+    const [pt, en] = await Promise.all([fetchLang('pt'), fetchLang('en')])
+    return mergePreferLanguage(pt, en)
+  }
+
+  return fetchLang('en')
+}
+
+export async function getCardsByIds(
+  language: AppLanguage,
+  ids: number[],
+): Promise<Card[]> {
+  if (ids.length === 0) return []
+
+  const { data, error } = await supabase
+    .from('cards')
+    .select('*')
+    .eq('language', language)
+    .in('id', ids)
+
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+}
+
+/** Resolve cartas preferindo o idioma pedido e completando com o outro */
+export async function getCardsByIdsWithFallback(
+  preferredLanguage: AppLanguage,
+  ids: number[],
+): Promise<Card[]> {
+  if (ids.length === 0) return []
+
+  const preferred = await getCardsByIds(preferredLanguage, ids)
+  const found = new Set(preferred.map((c) => c.id))
+  const missing = ids.filter((id) => !found.has(id))
+
+  if (missing.length === 0) return preferred
+
+  const fallbackLang: AppLanguage = preferredLanguage === 'pt' ? 'en' : 'pt'
+  const fallback = await getCardsByIds(fallbackLang, missing)
+  return mergePreferLanguage(preferred, fallback)
 }
 
 export async function getDistinctSetNames(
@@ -302,17 +439,26 @@ export async function getDistinctSetNames(
   limit = 30,
 ): Promise<string[]> {
   const q = normalizeQuery(search)
-  const { data, error } = await supabase
-    .from('cards')
-    .select('card_sets')
-    .eq('language', language)
-    .not('card_sets', 'is', null)
-    .limit(500)
 
-  if (error) throw new Error(error.message)
+  async function fetchLang(lang: AppLanguage) {
+    const { data, error } = await supabase
+      .from('cards')
+      .select('card_sets')
+      .eq('language', lang)
+      .not('card_sets', 'is', null)
+      .limit(500)
+
+    if (error) throw new Error(error.message)
+    return data ?? []
+  }
+
+  const rows =
+    language === 'pt'
+      ? [...(await fetchLang('pt')), ...(await fetchLang('en'))]
+      : await fetchLang('en')
 
   const names = new Set<string>()
-  for (const row of data ?? []) {
+  for (const row of rows) {
     for (const set of parseCardSets((row as { card_sets: unknown }).card_sets)) {
       if (!q || set.set_name.toLowerCase().includes(q.toLowerCase())) {
         names.add(set.set_name)
@@ -324,17 +470,25 @@ export async function getDistinctSetNames(
 }
 
 export async function getDistinctRarities(language: AppLanguage): Promise<string[]> {
-  const { data, error } = await supabase
-    .from('cards')
-    .select('card_sets')
-    .eq('language', language)
-    .not('card_sets', 'is', null)
-    .limit(500)
+  async function fetchLang(lang: AppLanguage) {
+    const { data, error } = await supabase
+      .from('cards')
+      .select('card_sets')
+      .eq('language', lang)
+      .not('card_sets', 'is', null)
+      .limit(500)
 
-  if (error) throw new Error(error.message)
+    if (error) throw new Error(error.message)
+    return data ?? []
+  }
+
+  const rows =
+    language === 'pt'
+      ? [...(await fetchLang('pt')), ...(await fetchLang('en'))]
+      : await fetchLang('en')
 
   const rarities = new Set<string>()
-  for (const row of data ?? []) {
+  for (const row of rows) {
     for (const set of parseCardSets((row as { card_sets: unknown }).card_sets)) {
       if (set.set_rarity) rarities.add(set.set_rarity)
     }

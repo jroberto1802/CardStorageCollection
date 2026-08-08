@@ -1,5 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { Layers, LogOut, Settings } from 'lucide-react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Bookmark, Layers, Layers3, LogOut, Settings } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -12,19 +12,33 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 
 export function AppLayout() {
   const { user, signOut } = useAuth()
+  const { pathname } = useLocation()
+  const wide = pathname.startsWith('/decks/')
 
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-bg)_85%,transparent)] backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-4 py-3">
           <div className="flex items-center gap-2">
             <Layers className="h-5 w-5 text-[var(--color-accent)]" />
             <span className="font-semibold tracking-tight">Card Storage Collection</span>
           </div>
 
-          <nav className="flex items-center gap-1">
+          <nav className="flex flex-wrap items-center justify-center gap-1">
             <NavLink to="/" end className={linkClass}>
               Início
+            </NavLink>
+            <NavLink to="/collection" className={linkClass}>
+              <span className="inline-flex items-center gap-1.5">
+                <Bookmark className="h-4 w-4" />
+                Minha coleção
+              </span>
+            </NavLink>
+            <NavLink to="/decks" className={linkClass}>
+              <span className="inline-flex items-center gap-1.5">
+                <Layers3 className="h-4 w-4" />
+                Decks
+              </span>
             </NavLink>
             <NavLink to="/settings" className={linkClass}>
               <span className="inline-flex items-center gap-1.5">
@@ -50,7 +64,12 @@ export function AppLayout() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8">
+      <main
+        className={[
+          'mx-auto px-4 py-8',
+          wide ? 'max-w-[1600px]' : 'max-w-7xl',
+        ].join(' ')}
+      >
         <Outlet />
       </main>
     </div>

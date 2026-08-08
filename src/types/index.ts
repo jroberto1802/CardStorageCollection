@@ -114,11 +114,14 @@ export interface CardImpression {
   linkmarkers: string[] | null
   imageUrl: string | null
   imageUrlSmall: string | null
+  /** Impressão representativa (primeira / melhor match da busca) */
   setCode: string
   setName: string
   setRarity: string
   setRarityCode: string | null
   region: CardRegion
+  /** Quantidade de versões (set codes) da carta */
+  versionCount: number
   searchRank: number
   syncedAt: string
 }
@@ -166,3 +169,113 @@ export const MONSTER_TYPE_OPTIONS: { value: MonsterTypeFilter; label: string }[]
   { value: 'link', label: 'Link' },
   { value: 'pendulum', label: 'Pêndulo' },
 ]
+
+/** Item salvo na coleção do usuário (impressão específica) */
+export interface CollectionItem {
+  id: string
+  user_id: string
+  card_id: number
+  language: AppLanguage
+  set_code: string
+  set_name: string
+  set_rarity: string
+  quantity: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CollectionItemWithCard extends CollectionItem {
+  card: Card | null
+}
+
+export type CollectionViewMode = 'list' | 'grid' | 'album'
+
+export interface AddToCollectionInput {
+  card_id: number
+  language: AppLanguage
+  set_code: string
+  set_name: string
+  set_rarity: string
+  quantity?: number
+}
+
+export interface AlbumSlot {
+  cardId: number
+  language: AppLanguage
+  name: string
+  /** Set code da coleção do álbum (exibido em azul) */
+  setCode: string
+  setName: string
+  setRarity: string
+  imageUrl: string | null
+  imageUrlSmall: string | null
+  owned: boolean
+  /** true se possui a impressão desta coleção; false se só outra versão */
+  ownedInAlbumSet: boolean
+  /** Set code que o usuário possui (pode ser de outra coleção) */
+  ownedSetCode: string | null
+  quantity: number
+  collectionItemId: string | null
+}
+
+export interface CollectionSetOption {
+  setName: string
+  /** Prefixo típico do set (ex.: LOB) extraído dos set_codes */
+  setPrefix: string
+  ownedCount: number
+}
+
+export type DeckZone = 'main' | 'extra'
+
+export interface Deck {
+  id: string
+  user_id: string
+  name: string
+  language: AppLanguage
+  created_at: string
+  updated_at: string
+}
+
+/** Uma cópia física no deck (repetidas = várias linhas) */
+export interface DeckCard {
+  id: string
+  deck_id: string
+  card_id: number
+  language: AppLanguage
+  zone: DeckZone
+  position: number
+  created_at: string
+}
+
+export interface DeckCardSlot extends DeckCard {
+  name: string
+  type: string | null
+  frameType: string | null
+  race: string | null
+  imageUrl: string | null
+  imageUrlSmall: string | null
+}
+
+export interface DeckSummary extends Deck {
+  mainCount: number
+  extraCount: number
+}
+
+/** Payload arrastado da busca para o deck */
+export interface DeckDragPayload {
+  cardId: number
+  language: AppLanguage
+  name: string
+  type: string | null
+  frameType: string | null
+  race: string | null
+  imageUrl: string | null
+  imageUrlSmall: string | null
+}
+
+export const DECK_DRAG_MIME = 'application/x-csc-deck-card'
+export const MAX_COPIES_PER_CARD = 3
+export const MAX_MAIN_DECK = 60
+export const MAX_EXTRA_DECK = 15
+

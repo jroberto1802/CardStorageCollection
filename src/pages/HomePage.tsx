@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Filter, Settings, SlidersHorizontal } from 'lucide-react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Grid3X3,
+  List,
+  Settings,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { SearchBar } from '@/components/catalog/SearchBar'
 import { FilterPanel } from '@/components/catalog/FilterPanel'
 import { CardGrid } from '@/components/catalog/CardGrid'
+import { CatalogListView } from '@/components/catalog/CatalogListView'
+import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useDebounce } from '@/hooks/useDebounce'
 import {
@@ -24,11 +34,13 @@ const PAGE_SIZE = 24
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'name_asc', label: 'Nome A → Z' },
   { value: 'name_desc', label: 'Nome Z → A' },
-  { value: 'set_asc', label: 'Set Code A → Z' },
-  { value: 'set_desc', label: 'Set Code Z → A' },
-  { value: 'rarity', label: 'Raridade' },
+  { value: 'set_asc', label: 'Set representativo A → Z' },
+  { value: 'set_desc', label: 'Set representativo Z → A' },
+  { value: 'rarity', label: 'Raridade (representativa)' },
   { value: 'release_date', label: 'Data de lançamento' },
 ]
+
+type CatalogViewMode = 'grid' | 'list'
 
 function countActiveFilters(filters: CatalogFilters): number {
   let count = 0
@@ -48,6 +60,7 @@ export function HomePage() {
   const [filters, setFilters] = useState<CatalogFilters>(DEFAULT_CATALOG_FILTERS)
   const [sort, setSort] = useState<SortOption>('name_asc')
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [viewMode, setViewMode] = useState<CatalogViewMode>('grid')
   const [page, setPage] = useState(0)
 
   const [items, setItems] = useState<CardImpression[]>([])
@@ -62,6 +75,16 @@ export function HomePage() {
   const [setSuggestions, setSetSuggestions] = useState<string[]>([])
   const [setSearch, setSetSearch] = useState('')
   const debouncedSetSearch = useDebounce(setSearch, 300)
+
+  const [addModalOpen, setAddModalOpen] = useState(false)
+  const [addPreset, setAddPreset] = useState<{
+    cardId: number
+    language?: CardImpression['language']
+    setCode: string
+    setName: string
+    setRarity: string
+  } | null>(null)
+  const [addFeedback, setAddFeedback] = useState<string | null>(null)
 
   const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters])
 
@@ -154,6 +177,18 @@ export function HomePage() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  function handleAddToCollection(item: CardImpression) {
+    setAddPreset({
+      cardId: item.cardId,
+      language: item.language,
+      setCode: item.setCode !== '—' ? item.setCode : '',
+      setName: item.setName !== 'Sem set' ? item.setName : '',
+      setRarity: item.setRarity !== '—' ? item.setRarity : '',
+    })
+    setAddModalOpen(true)
+    setAddFeedback(null)
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -217,6 +252,37 @@ export function HomePage() {
             ))}
           </select>
         </label>
+
+        <div className="ml-auto flex items-center gap-1 rounded-lg border border-[var(--color-border)] p-0.5">
+          <button
+            type="button"
+            title="Quadros"
+            onClick={() => setViewMode('grid')}
+            className={[
+              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
+              viewMode === 'grid'
+                ? 'bg-[var(--color-accent)] text-white'
+                : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
+            ].join(' ')}
+          >
+            <Grid3X3 className="h-4 w-4" />
+            <span className="hidden sm:inline">Quadros</span>
+          </button>
+          <button
+            type="button"
+            title="Lista"
+            onClick={() => setViewMode('list')}
+            className={[
+              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition',
+              viewMode === 'list'
+                ? 'bg-[var(--color-accent)] text-white'
+                : 'text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
+            ].join(' ')}
+          >
+            <List className="h-4 w-4" />
+            <span className="hidden sm:inline">Lista</span>
+          </button>
+        </div>
       </div>
 
       <FilterPanel
@@ -257,7 +323,13 @@ export function HomePage() {
         </p>
       )}
 
-      {loading && (
+      {addFeedback && (
+        <p className="rounded-lg border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-3 py-2 text-sm text-green-300">
+          {addFeedback}
+        </p>
+      )}
+
+      {loading && viewMode === 'grid' && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
           {Array.from({ length: 12 }).map((_, index) => (
             <div
@@ -274,6 +346,20 @@ export function HomePage() {
         </div>
       )}
 
+      {loading && viewMode === 'list' && (
+        <div className="animate-pulse space-y-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div key={index} className="flex gap-3 py-2">
+              <div className="h-16 w-11 rounded bg-[var(--color-surface-2)]" />
+              <div className="flex-1 space-y-2 py-1">
+                <div className="h-3 w-2/3 rounded bg-[var(--color-surface-2)]" />
+                <div className="h-3 w-1/3 rounded bg-[var(--color-surface-2)]" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {!loading && !error && items.length === 0 && (
         <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-16 text-center">
           <p className="text-lg font-medium">Nenhuma carta encontrada.</p>
@@ -283,7 +369,13 @@ export function HomePage() {
         </div>
       )}
 
-      {!loading && items.length > 0 && <CardGrid items={items} />}
+      {!loading && items.length > 0 && viewMode === 'grid' && (
+        <CardGrid items={items} />
+      )}
+
+      {!loading && items.length > 0 && viewMode === 'list' && (
+        <CatalogListView items={items} onAddToCollection={handleAddToCollection} />
+      )}
 
       {!loading && total > PAGE_SIZE && (
         <div className="flex items-center justify-center gap-3 pt-2">
@@ -310,6 +402,19 @@ export function HomePage() {
           </button>
         </div>
       )}
+
+      <AddToCollectionModal
+        open={addModalOpen}
+        preset={addPreset}
+        onClose={() => {
+          setAddModalOpen(false)
+          setAddPreset(null)
+        }}
+        onAdded={() => {
+          setAddFeedback('Carta adicionada à coleção.')
+          setTimeout(() => setAddFeedback(null), 2500)
+        }}
+      />
     </div>
   )
 }

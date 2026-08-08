@@ -7,7 +7,11 @@ interface CatalogCardProps {
 }
 
 export function CatalogCard({ impression }: CatalogCardProps) {
-  const detailUrl = `/cards/${impression.cardId}?set=${encodeURIComponent(impression.setCode)}&lang=${impression.language}`
+  const params = new URLSearchParams({ lang: impression.language })
+  if (impression.setCode && impression.setCode !== '—') {
+    params.set('set', impression.setCode)
+  }
+  const detailUrl = `/cards/${impression.cardId}?${params.toString()}`
 
   return (
     <Link
@@ -32,13 +36,26 @@ export function CatalogCard({ impression }: CatalogCardProps) {
       <div className="flex flex-1 flex-col gap-2 p-3">
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{impression.name}</h3>
 
-        <p className="font-mono text-sm font-bold tracking-wide text-[var(--color-accent)]">
-          {impression.setCode}
+        <p className="text-xs text-[var(--color-muted)]">
+          {impression.versionCount > 0 ? (
+            <>
+              {impression.versionCount === 1
+                ? '1 versão'
+                : `${impression.versionCount} versões`}
+              {impression.setCode !== '—' && (
+                <span className="font-mono text-[var(--color-accent)]">
+                  {' '}
+                  · {impression.setCode}
+                </span>
+              )}
+            </>
+          ) : (
+            'Sem set'
+          )}
         </p>
 
         <p className="text-xs text-[var(--color-muted)]">
           {[
-            impression.setRarity !== '—' ? impression.setRarity : null,
             languageLabel(impression.language) === 'Português' ? 'PT' : 'EN',
             impression.region !== 'Unknown' ? impression.region : null,
           ]

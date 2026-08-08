@@ -126,6 +126,30 @@ export function matchesMonsterType(
   }
 }
 
+/** Fusion / Synchro / Xyz / Link → Extra Deck */
+export function isExtraDeckCard(
+  type: string | null,
+  frameType: string | null,
+): boolean {
+  const t = `${type ?? ''} ${frameType ?? ''}`.toLowerCase()
+  return (
+    t.includes('fusion') ||
+    t.includes('fusão') ||
+    t.includes('fusao') ||
+    t.includes('synchro') ||
+    t.includes('sincro') ||
+    t.includes('xyz') ||
+    t.includes('link')
+  )
+}
+
+export function resolveDeckZone(
+  type: string | null,
+  frameType: string | null,
+): 'main' | 'extra' {
+  return isExtraDeckCard(type, frameType) ? 'extra' : 'main'
+}
+
 export function languageLabel(language: AppLanguage): string {
   return language === 'pt' ? 'Português' : 'Inglês'
 }
@@ -141,48 +165,29 @@ export function categoryLabel(category: CardCategory): string {
   }
 }
 
-export function expandCardToImpressions(
+/**
+ * Uma entrada de catálogo por carta (não por impressão/set code).
+ * Usa a impressão com melhor match da busca, ou a primeira disponível.
+ */
+export function cardToCatalogItem(
   card: Card,
-  searchRank = 99,
-): CardImpression[] {
+  query = '',
+): CardImpression | null {
   const sets = parseCardSets(card.card_sets)
   const images = getPrimaryImage(card)
   const banlist = parseBanlistInfo(card.banlist_info)
+  const searchRank = query ? computeCardSearchRank(card, query) : 99
 
-  if (sets.length === 0) {
-    return [
-      {
-        key: `${card.id}-${card.language}-unknown`,
-        cardId: card.id,
-        language: card.language,
-        name: card.name,
-        type: card.type,
-        frameType: card.frame_type,
-        description: card.description,
-        atk: card.atk,
-        def: card.def,
-        level: card.level,
-        race: card.race,
-        attribute: card.attribute,
-        archetype: card.archetype,
-        scale: card.scale,
-        linkval: card.linkval,
-        linkmarkers: card.linkmarkers,
-        imageUrl: images.full,
-        imageUrlSmall: images.small,
-        setCode: '—',
-        setName: 'Sem set',
-        setRarity: '—',
-        setRarityCode: null,
-        region: 'Unknown',
-        searchRank,
-        syncedAt: card.synced_at,
-      },
-    ]
-  }
+  if (query && searchRank >= 99) return null
 
-  return sets.map((set) => ({
-    key: `${card.id}-${card.language}-${set.set_code}-${set.set_rarity}`,
+  const preferredSet = pickPreferredSet(sets, query)
+  const setCode = preferredSet?.set_code ?? '—'
+  const region = preferredSet
+    ? detectRegion(preferredSet.set_code, banlist)
+    : 'Unknown'
+
+  return {
+    key: `${card.id}-${card.language}`,
     cardId: card.id,
     language: card.language,
     name: card.name,
@@ -200,14 +205,53 @@ export function expandCardToImpressions(
     linkmarkers: card.linkmarkers,
     imageUrl: images.full,
     imageUrlSmall: images.small,
-    setCode: set.set_code,
-    setName: set.set_name,
-    setRarity: set.set_rarity || '—',
-    setRarityCode: set.set_rarity_code ?? null,
-    region: detectRegion(set.set_code, banlist),
-    searchRank,
+    setCode,
+    setName: preferredSet?.set_name ?? 'Sem set',
+    setRarity: preferredSet?.set_rarity || '—',
+    setRarityCode: preferredSet?.set_rarity_code ?? null,
+    region,
+    versionCount: sets.length,
+    searchRank: query ? searchRank : 99,
     syncedAt: card.synced_at,
-  }))
+  }
+}
+
+/** @deprecated Prefer cardToCatalogItem — mantido para compatibilidade interna */
+export function expandCardToImpressions(
+  card: Card,
+  searchRank = 99,
+): CardImpression[] {
+  const item = cardToCatalogItem(card, '')
+  if (!item) return []
+  return [{ ...item, searchRank }]
+}
+
+function pickPreferredSet(sets: CardSet[], query: string): CardSet | null {
+  if (sets.length === 0) return null
+  if (!query) return sets[0]
+
+  const q = query.toLowerCase()
+  const exact = sets.find((set) => set.set_code.toLowerCase() === q)
+  if (exact) return exact
+
+  const partial = sets.find((set) => set.set_code.toLowerCase().includes(q))
+  if (partial) return partial
+
+  return sets[0]
+}
+
+export function computeCardSearchRank(card: Card, query: string): number {
+  const q = query.toLowerCase()
+  const name = card.name.toLowerCase()
+  const desc = (card.description ?? '').toLowerCase()
+  const sets = parseCardSets(card.card_sets)
+
+  if (sets.some((set) => set.set_code.toLowerCase() === q)) return 1
+  if (sets.some((set) => set.set_code.toLowerCase().includes(q))) return 2
+  if (name === q) return 3
+  if (name.includes(q)) return 4
+  if (desc.includes(q)) return 5
+  return 99
 }
 
 export function computeSearchRank(
@@ -226,6 +270,61 @@ export function computeSearchRank(
   if (name.includes(q)) return 4
   if (desc.includes(q)) return 5
   return 99
+}
+
+export function matchesCardFilters(card: Card, filters: CatalogFilters): boolean {
+  const category = getCardCategory(card.type)
+  const sets = parseCardSets(card.card_sets)
+  const banlist = parseBanlistInfo(card.banlist_info)
+
+  if (filters.cardCategory && category !== filters.cardCategory) {
+    return false
+  }
+
+  if (filters.monsterTypes.length > 0) {
+    if (category !== 'monster') return false
+    const ok = filters.monsterTypes.some((mt) =>
+      matchesMonsterType(card.type, card.frame_type, mt),
+    )
+    if (!ok) return false
+  }
+
+  if (filters.attributes.length > 0) {
+    if (
+      !card.attribute ||
+      !filters.attributes.map((a) => a.toUpperCase()).includes(card.attribute.toUpperCase())
+    ) {
+      return false
+    }
+  }
+
+  if (filters.rarities.length > 0) {
+    const ok = sets.some((set) =>
+      filters.rarities.some(
+        (r) => (set.set_rarity || '').toLowerCase() === r.toLowerCase(),
+      ),
+    )
+    if (!ok) return false
+  }
+
+  if (filters.region) {
+    const ok = sets.some(
+      (set) => detectRegion(set.set_code, banlist) === filters.region,
+    )
+    if (!ok) return false
+  }
+
+  if (filters.setName.trim()) {
+    const setQ = filters.setName.trim().toLowerCase()
+    const ok = sets.some(
+      (set) =>
+        set.set_name.toLowerCase().includes(setQ) ||
+        set.set_code.toLowerCase().includes(setQ),
+    )
+    if (!ok) return false
+  }
+
+  return true
 }
 
 export function matchesFilters(

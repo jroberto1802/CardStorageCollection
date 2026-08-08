@@ -3,8 +3,12 @@
 ## 1. Rodar o SQL
 
 1. Abra o [SQL Editor](https://supabase.com/dashboard/project/ytbnhmqwcrjkglauromc/sql)
-2. Cole o conteúdo de `migrations/001_initial.sql`
-3. Execute (Run)
+2. Cole o conteúdo de `migrations/001_initial.sql` e execute (Run)
+3. Cole o conteúdo de `migrations/002_collection_items.sql` e execute (necessário para **Minha coleção**)
+4. Cole o conteúdo de `migrations/003_decks.sql` e execute (necessário para **Decks**)
+
+A migration `002` cria a tabela `collection_items` (inventário por impressão: card + set_code + raridade) com RLS por usuário.
+A migration `003` cria `decks` e `deck_cards` (construção de deck; 1 linha = 1 cópia).
 
 ## 2. Deploy da Edge Function `sync-cards`
 
