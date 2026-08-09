@@ -9,6 +9,7 @@ import {
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react'
+import { DeckCardPreviewModal } from '@/components/deck/DeckCardPreviewModal'
 import { DeckSearchCard } from '@/components/deck/DeckSearchCard'
 import { DeckZonePanel } from '@/components/deck/DeckZonePanel'
 import { FilterPanel } from '@/components/catalog/FilterPanel'
@@ -29,6 +30,7 @@ import {
 } from '@/services/deckService'
 import {
   DEFAULT_CATALOG_FILTERS,
+  type AppLanguage,
   type CardImpression,
   type CatalogFilters,
   type Deck,
@@ -70,6 +72,8 @@ export function DeckBuilderPage() {
   const [setSearch, setSetSearch] = useState('')
   const debouncedSetSearch = useDebounce(setSearch, 300)
   const [ownedByCard, setOwnedByCard] = useState<Map<number, number>>(new Map())
+  const [previewCardId, setPreviewCardId] = useState<number | null>(null)
+  const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
 
   const mainSlots = useMemo(
     () => slots.filter((s) => s.zone === 'main'),
@@ -337,6 +341,10 @@ export function DeckBuilderPage() {
             columns={10}
             onDropPayload={(payload) => void handleAdd(payload)}
             onRemove={(id) => void handleRemove(id)}
+            onCardClick={(slot) => {
+              setPreviewCardId(slot.card_id)
+              setPreviewLanguage(slot.language)
+            }}
           />
 
           <DeckZonePanel
@@ -347,11 +355,16 @@ export function DeckBuilderPage() {
             columns={10}
             onDropPayload={(payload) => void handleAdd(payload)}
             onRemove={(id) => void handleRemove(id)}
+            onCardClick={(slot) => {
+              setPreviewCardId(slot.card_id)
+              setPreviewLanguage(slot.language)
+            }}
           />
 
           <p className="text-[11px] text-[var(--color-muted)]">
             Fusion, Synchro, Xyz e Link vão automaticamente para o Extra Deck.
-            Máximo de 3 cópias da mesma carta. Clique no X para remover.
+            Máximo de 3 cópias da mesma carta. Clique na carta para ver detalhes;
+            no X para remover.
           </p>
         </div>
 
@@ -449,8 +462,8 @@ export function DeckBuilderPage() {
             <p className="text-xs text-[var(--color-muted)]">Buscando...</p>
           ) : (
             <p className="text-xs text-[var(--color-muted)]">
-              {searchItems.length} resultado(s) · arraste para o deck ou dê duplo
-              clique
+              {searchItems.length} resultado(s) · clique para detalhe · arraste ou
+              dê duplo clique para adicionar
             </p>
           )}
 
@@ -464,6 +477,10 @@ export function DeckBuilderPage() {
                   copiesInDeck={copiesByCard.get(item.cardId) ?? 0}
                   dimUnowned={dimUnowned}
                   onAdd={(payload) => void handleAdd(payload)}
+                  onPreview={(preview) => {
+                    setPreviewCardId(preview.cardId)
+                    setPreviewLanguage(preview.language)
+                  }}
                 />
               ))}
             </div>
@@ -475,6 +492,13 @@ export function DeckBuilderPage() {
           </div>
         </div>
       </div>
+
+      <DeckCardPreviewModal
+        open={previewCardId != null}
+        cardId={previewCardId}
+        language={previewLanguage}
+        onClose={() => setPreviewCardId(null)}
+      />
     </div>
   )
 }

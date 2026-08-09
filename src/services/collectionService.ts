@@ -35,13 +35,24 @@ export function extractSetPrefix(setCode: string): string {
 
 /** Lista inventário completo (não filtra por idioma das configs) */
 export async function listCollectionItems(): Promise<CollectionItem[]> {
-  const { data, error } = await supabase
-    .from('collection_items')
-    .select('*')
-    .order('created_at', { ascending: false })
+  const pageSize = 1000
+  const all: CollectionItem[] = []
 
-  if (error) throw new Error(error.message)
-  return (data ?? []).map((row) => mapItem(row as Record<string, unknown>))
+  for (let from = 0; ; from += pageSize) {
+    const to = from + pageSize - 1
+    const { data, error } = await supabase
+      .from('collection_items')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw new Error(error.message)
+    const page = (data ?? []).map((row) => mapItem(row as Record<string, unknown>))
+    all.push(...page)
+    if (page.length < pageSize) break
+  }
+
+  return all
 }
 
 /**
@@ -109,6 +120,20 @@ export async function findCollectionItem(params: {
   const row = data?.[0]
   if (!row) return null
   return mapItem(row as Record<string, unknown>)
+}
+
+/** Todas as impressões (set codes) que o usuário possui desta carta */
+export async function listCollectionItemsByCardId(
+  cardId: number,
+): Promise<CollectionItem[]> {
+  const { data, error } = await supabase
+    .from('collection_items')
+    .select('*')
+    .eq('card_id', cardId)
+    .order('set_code', { ascending: true })
+
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row) => mapItem(row as Record<string, unknown>))
 }
 
 export async function addToCollection(
@@ -194,10 +219,14 @@ export async function getOwnedSetOptions(): Promise<CollectionSetOption[]> {
     const current = map.get(key)
     if (current) {
       current.ownedCount += 1
+      if (!current.setCodes.includes(item.set_code)) {
+        current.setCodes.push(item.set_code)
+      }
     } else {
       map.set(key, {
         setName: item.set_name || 'Sem nome',
         setPrefix: extractSetPrefix(item.set_code),
+        setCodes: [item.set_code],
         ownedCount: 1,
       })
     }

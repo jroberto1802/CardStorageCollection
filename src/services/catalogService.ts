@@ -438,18 +438,52 @@ export async function getDistinctSetNames(
   search: string,
   limit = 30,
 ): Promise<string[]> {
-  const q = normalizeQuery(search)
+  const q = normalizeQuery(search).toLowerCase()
+
+  function setMatchesQuery(set: { set_name: string; set_code: string }): boolean {
+    if (!q) return true
+    const name = set.set_name.toLowerCase()
+    const code = set.set_code.toLowerCase()
+    const prefix = code.split(/[-_]/)[0] ?? code
+    return name.includes(q) || code.includes(q) || prefix.includes(q)
+  }
 
   async function fetchLang(lang: AppLanguage) {
-    const { data, error } = await supabase
-      .from('cards')
-      .select('card_sets')
-      .eq('language', lang)
-      .not('card_sets', 'is', null)
-      .limit(500)
+    // Sem busca: amostra. Com busca: pagina o catálogo (ilike em jsonb não funciona).
+    const pageSize = 1000
+    const maxPages = q ? 25 : 1
+    const rows: { card_sets: unknown }[] = []
 
-    if (error) throw new Error(error.message)
-    return data ?? []
+    for (let page = 0; page < maxPages; page += 1) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      const { data, error } = await supabase
+        .from('cards')
+        .select('card_sets')
+        .eq('language', lang)
+        .not('card_sets', 'is', null)
+        .order('id', { ascending: true })
+        .range(from, to)
+
+      if (error) throw new Error(error.message)
+      if (!data?.length) break
+
+      rows.push(...(data as { card_sets: unknown }[]))
+      if (data.length < pageSize) break
+
+      // Se já achou sets suficientes com a busca, pode parar cedo
+      if (q) {
+        const found = new Set<string>()
+        for (const row of rows) {
+          for (const set of parseCardSets(row.card_sets)) {
+            if (setMatchesQuery(set)) found.add(set.set_name)
+          }
+        }
+        if (found.size >= limit) break
+      }
+    }
+
+    return rows
   }
 
   const rows =
@@ -459,8 +493,8 @@ export async function getDistinctSetNames(
 
   const names = new Set<string>()
   for (const row of rows) {
-    for (const set of parseCardSets((row as { card_sets: unknown }).card_sets)) {
-      if (!q || set.set_name.toLowerCase().includes(q.toLowerCase())) {
+    for (const set of parseCardSets(row.card_sets)) {
+      if (setMatchesQuery(set)) {
         names.add(set.set_name)
       }
     }

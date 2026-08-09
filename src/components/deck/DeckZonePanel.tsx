@@ -11,6 +11,7 @@ interface DeckZonePanelProps {
   ownedByCard?: Map<number, number>
   onDropPayload: (payload: DeckDragPayload) => void
   onRemove: (slotId: string) => void
+  onCardClick?: (slot: DeckCardSlot) => void
   columns?: number
 }
 
@@ -33,6 +34,7 @@ export function DeckZonePanel({
   ownedByCard,
   onDropPayload,
   onRemove,
+  onCardClick,
   columns = 10,
 }: DeckZonePanelProps) {
   const sorted = sortDeckSlotsByType(slots, zone)
@@ -80,9 +82,22 @@ export function DeckZonePanel({
             return (
               <div
                 key={slot.id}
+                role={onCardClick ? 'button' : undefined}
+                tabIndex={onCardClick ? 0 : undefined}
+                onClick={() => onCardClick?.(slot)}
+                onKeyDown={(event) => {
+                  if (!onCardClick) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onCardClick(slot)
+                  }
+                }}
                 className={[
                   'group relative aspect-[59/86] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] transition',
                   coveredByCollection ? '' : 'opacity-25',
+                  onCardClick
+                    ? 'cursor-pointer hover:border-[var(--color-accent)]'
+                    : '',
                 ].join(' ')}
                 title={
                   coveredByCollection
@@ -107,7 +122,10 @@ export function DeckZonePanel({
                 <button
                   type="button"
                   title="Remover"
-                  onClick={() => onRemove(slot.id)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRemove(slot.id)
+                  }}
                   className="absolute top-0.5 right-0.5 rounded bg-black/70 p-0.5 text-white opacity-0 transition group-hover:opacity-100 hover:bg-[var(--color-danger)]"
                 >
                   <X className="h-3 w-3" />

@@ -10,6 +10,7 @@ interface DeckSearchCardProps {
   /** Quando true, cartas não possuídas ficam com opacidade baixa */
   dimUnowned?: boolean
   onAdd: (payload: DeckDragPayload) => void
+  onPreview?: (item: CardImpression) => void
 }
 
 export function DeckSearchCard({
@@ -18,6 +19,7 @@ export function DeckSearchCard({
   copiesInDeck,
   dimUnowned = false,
   onAdd,
+  onPreview,
 }: DeckSearchCardProps) {
   const payload: DeckDragPayload = {
     cardId: item.cardId,
@@ -49,13 +51,15 @@ export function DeckSearchCard({
       type="button"
       draggable={!atLimit}
       onDragStart={handleDragStart}
-      onDoubleClick={() => {
+      onClick={() => onPreview?.(item)}
+      onDoubleClick={(event) => {
+        event.preventDefault()
         if (!atLimit) onAdd(payload)
       }}
       title={
         atLimit
           ? 'Já há 3 cópias no deck'
-          : `${item.name} — arraste ou dê duplo clique (${extra ? 'Extra' : 'Principal'})${
+          : `${item.name} — clique para detalhe · arraste ou dê duplo clique para adicionar (${extra ? 'Extra' : 'Principal'})${
               owned ? '' : ' · você não possui'
             }`
       }

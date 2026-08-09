@@ -250,6 +250,8 @@ export interface CollectionSetOption {
   setName: string
   /** Prefixo típico do set (ex.: LOB) extraído dos set_codes */
   setPrefix: string
+  /** Códigos de impressão vistos neste set (para busca por set code) */
+  setCodes: string[]
   ownedCount: number
 }
 

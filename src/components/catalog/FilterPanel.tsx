@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import {
   CARD_ATTRIBUTES,
   KNOWN_RARITIES,
@@ -29,11 +31,49 @@ export function FilterPanel({
   onSetSearch,
   onClear,
 }: FilterPanelProps) {
+  const [setSearch, setSetSearch] = useState(filters.setName)
+  const [setPickerOpen, setSetPickerOpen] = useState(false)
+  const setPickerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setSetSearch(filters.setName)
+  }, [filters.setName])
+
+  useEffect(() => {
+    if (!setPickerOpen) return
+
+    function handlePointerDown(event: MouseEvent) {
+      if (
+        setPickerRef.current &&
+        !setPickerRef.current.contains(event.target as Node)
+      ) {
+        setSetPickerOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [setPickerOpen])
+
   if (!open) return null
 
   const rarityOptions = Array.from(
     new Set([...KNOWN_RARITIES, ...rarities]),
   ).sort((a, b) => a.localeCompare(b, 'en'))
+
+  function handleSelectSet(name: string) {
+    setSetSearch(name)
+    onSetSearch(name)
+    onChange({ ...filters, setName: name })
+    setSetPickerOpen(false)
+  }
+
+  function handleClearSet() {
+    setSetSearch('')
+    onSetSearch('')
+    onChange({ ...filters, setName: '' })
+    setSetPickerOpen(false)
+  }
 
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
@@ -169,22 +209,78 @@ export function FilterPanel({
 
         <fieldset className="md:col-span-2">
           <legend className="mb-2 text-sm text-[var(--color-muted)]">Coleção / Set</legend>
-          <input
-            type="text"
-            value={filters.setName}
-            onChange={(e) => {
-              onChange({ ...filters, setName: e.target.value })
-              onSetSearch(e.target.value)
-            }}
-            placeholder="Nome da coleção (ex.: Legend of Blue Eyes)"
-            className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
-            list="set-suggestions"
-          />
-          <datalist id="set-suggestions">
-            {setSuggestions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
+          <div className="relative" ref={setPickerRef}>
+            <div className="relative">
+              <input
+                type="text"
+                value={setSearch}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setSetSearch(value)
+                  onSetSearch(value)
+                  setSetPickerOpen(true)
+                  if (filters.setName && value !== filters.setName) {
+                    onChange({ ...filters, setName: '' })
+                  }
+                }}
+                onFocus={() => setSetPickerOpen(true)}
+                placeholder="Digite nome ou set code (ex.: CH01, LOB)..."
+                autoComplete="off"
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] py-2 pr-10 pl-3 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
+              />
+              {(setSearch || filters.setName) && (
+                <button
+                  type="button"
+                  title="Limpar"
+                  onClick={handleClearSet}
+                  className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-[var(--color-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {setPickerOpen && (
+              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl">
+                {setSuggestions.length === 0 ? (
+                  <li className="px-3 py-3 text-sm text-[var(--color-muted)]">
+                    Nenhuma coleção encontrada.
+                  </li>
+                ) : (
+                  setSuggestions.map((name) => (
+                    <li key={name}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectSet(name)}
+                        className={[
+                          'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left text-sm transition hover:bg-[var(--color-surface-2)]',
+                          filters.setName === name
+                            ? 'bg-[var(--color-accent)]/15'
+                            : '',
+                        ].join(' ')}
+                      >
+                        <span className="font-medium text-[var(--color-text)]">
+                          {name}
+                        </span>
+                        <span className="text-xs text-[var(--color-muted)]">
+                          Catálogo
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+
+            {filters.setName && (
+              <p className="mt-2 text-xs text-[var(--color-muted)]">
+                Selecionado:{' '}
+                <span className="font-medium text-[var(--color-text)]">
+                  {filters.setName}
+                </span>
+              </p>
+            )}
+          </div>
         </fieldset>
 
         <fieldset className="md:col-span-2 xl:col-span-3">

@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, BookmarkPlus, Check, Loader2, Minus, Package, Plus } from 'lucide-react'
+import {
+  ArrowLeft,
+  BookmarkPlus,
+  Check,
+  Eye,
+  Loader2,
+  Minus,
+  Package,
+  Plus,
+} from 'lucide-react'
 import { useSettings } from '@/contexts/SettingsContext'
 import { getCardById } from '@/services/catalogService'
 import {
   addToCollection,
-  findCollectionItem,
+  listCollectionItemsByCardId,
   updateCollectionQuantity,
 } from '@/services/collectionService'
 import {
@@ -45,9 +54,9 @@ export function CardDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const [ownedItem, setOwnedItem] = useState<CollectionItem | null>(null)
+  const [ownedItems, setOwnedItems] = useState<CollectionItem[]>([])
   const [collectionLoading, setCollectionLoading] = useState(false)
-  const [collectionBusy, setCollectionBusy] = useState(false)
+  const [collectionBusyId, setCollectionBusyId] = useState<string | null>(null)
   const [collectionMessage, setCollectionMessage] = useState<string | null>(null)
 
   useEffect(() => {
@@ -125,22 +134,18 @@ export function CardDetailPage() {
     let mounted = true
 
     async function loadOwned() {
-      if (!card || !selectedSet) {
-        setOwnedItem(null)
+      if (!card) {
+        setOwnedItems([])
         return
       }
 
       setCollectionLoading(true)
       setCollectionMessage(null)
       try {
-        const item = await findCollectionItem({
-          cardId: card.id,
-          setCode: selectedSet.set_code,
-          setRarity: selectedSet.set_rarity || '',
-        })
-        if (mounted) setOwnedItem(item)
+        const items = await listCollectionItemsByCardId(card.id)
+        if (mounted) setOwnedItems(items)
       } catch {
-        if (mounted) setOwnedItem(null)
+        if (mounted) setOwnedItems([])
       } finally {
         if (mounted) setCollectionLoading(false)
       }
@@ -150,7 +155,7 @@ export function CardDetailPage() {
     return () => {
       mounted = false
     }
-  }, [card, selectedSet, language])
+  }, [card])
 
   const images = card ? getPrimaryImage(card) : { full: null, small: null }
   const banlist = card ? parseBanlistInfo(card.banlist_info) : null
@@ -159,55 +164,100 @@ export function CardDetailPage() {
     : 'Unknown'
   const category = card ? getCardCategory(card.type) : null
 
-  async function handleAddToCollection() {
-    if (!card || !selectedSet) return
+  const selectedOwnedItem = useMemo(() => {
+    if (!selectedSet) return null
+    return (
+      ownedItems.find(
+        (item) =>
+          item.set_code.toLowerCase() === selectedSet.set_code.toLowerCase() &&
+          (item.set_rarity || '') === (selectedSet.set_rarity || ''),
+      ) ?? null
+    )
+  }, [ownedItems, selectedSet])
 
-    setCollectionBusy(true)
+  function upsertOwnedItem(item: CollectionItem) {
+    setOwnedItems((prev) => {
+      const without = prev.filter((row) => row.id !== item.id)
+      return [...without, item].sort((a, b) =>
+        a.set_code.localeCompare(b.set_code, 'en'),
+      )
+    })
+  }
+
+  function removeOwnedItem(id: string) {
+    setOwnedItems((prev) => prev.filter((row) => row.id !== id))
+  }
+
+  async function handleAddImpression(set: CardSet) {
+    if (!card) return
+
+    const busyKey = `add:${set.set_code}|${set.set_rarity || ''}`
+    setCollectionBusyId(busyKey)
     setCollectionMessage(null)
     try {
       const item = await addToCollection({
         card_id: card.id,
         language: card.language,
-        set_code: selectedSet.set_code,
-        set_name: selectedSet.set_name,
-        set_rarity: selectedSet.set_rarity || '',
+        set_code: set.set_code,
+        set_name: set.set_name,
+        set_rarity: set.set_rarity || '',
         quantity: 1,
       })
-      setOwnedItem(item)
+      upsertOwnedItem(item)
       setCollectionMessage(
         item.quantity > 1
-          ? `Quantidade atualizada para ${item.quantity}.`
-          : 'Carta adicionada à coleção!',
+          ? `${set.set_code}: quantidade ${item.quantity}.`
+          : `${set.set_code}: adicionada à coleção!`,
       )
     } catch (err) {
       setCollectionMessage(
         err instanceof Error ? err.message : 'Falha ao adicionar à coleção',
       )
     } finally {
-      setCollectionBusy(false)
+      setCollectionBusyId(null)
     }
   }
 
-  async function handleDecrementCollection() {
-    if (!ownedItem) return
-
-    setCollectionBusy(true)
+  async function handleIncrementOwned(item: CollectionItem) {
+    setCollectionBusyId(item.id)
     setCollectionMessage(null)
     try {
-      const nextQty = ownedItem.quantity - 1
-      const updated = await updateCollectionQuantity(ownedItem.id, nextQty)
-      setOwnedItem(updated)
-      setCollectionMessage(
-        updated
-          ? `Quantidade atualizada para ${updated.quantity}.`
-          : 'Removida da coleção.',
-      )
+      const updated = await updateCollectionQuantity(item.id, item.quantity + 1)
+      if (updated) {
+        upsertOwnedItem(updated)
+        setCollectionMessage(
+          `${updated.set_code}: quantidade ${updated.quantity}.`,
+        )
+      }
     } catch (err) {
       setCollectionMessage(
         err instanceof Error ? err.message : 'Falha ao atualizar quantidade',
       )
     } finally {
-      setCollectionBusy(false)
+      setCollectionBusyId(null)
+    }
+  }
+
+  async function handleDecrementOwned(item: CollectionItem) {
+    setCollectionBusyId(item.id)
+    setCollectionMessage(null)
+    try {
+      const updated = await updateCollectionQuantity(item.id, item.quantity - 1)
+      if (updated) {
+        upsertOwnedItem(updated)
+        setCollectionMessage(
+          `${updated.set_code}: quantidade ${updated.quantity}.`,
+        )
+      } else {
+        removeOwnedItem(item.id)
+        setCollectionMessage(`${item.set_code}: removida da coleção.`)
+      }
+    } catch (err) {
+      setCollectionMessage(
+        err instanceof Error ? err.message : 'Falha ao atualizar quantidade',
+      )
+    } finally {
+      setCollectionBusyId(null)
     }
   }
 
@@ -267,83 +317,116 @@ export function CardDetailPage() {
             )}
           </div>
 
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60 p-4">
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium">
               <BookmarkPlus className="h-4 w-4 text-[var(--color-accent)]" />
               Minha coleção
             </div>
-            <p className="text-xs text-[var(--color-muted)]">
-              Impressão:{' '}
-              <span className="font-mono text-[var(--color-text)]">
-                {selectedSet?.set_code ?? '—'}
-              </span>
-              {selectedSet?.set_rarity ? ` · ${selectedSet.set_rarity}` : ''}
-            </p>
 
             {collectionLoading ? (
-              <p className="mt-3 text-xs text-[var(--color-muted)]">Verificando coleção...</p>
-            ) : ownedItem ? (
-              <div className="mt-3 space-y-2">
-                <p className="inline-flex items-center gap-1.5 text-sm text-[var(--color-success)]">
-                  <Check className="h-4 w-4" />
-                  Na coleção
-                </p>
-                <div className="flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    title="Remover 1"
-                    disabled={collectionBusy}
-                    onClick={() => void handleDecrementCollection()}
-                    className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 hover:text-red-300 disabled:opacity-50"
-                  >
-                    {collectionBusy ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Minus className="h-4 w-4" />
-                    )}
-                  </button>
-                  <span
-                    className="min-w-10 text-center text-lg font-semibold tabular-nums"
-                    aria-live="polite"
-                  >
-                    {ownedItem.quantity}
-                  </span>
-                  <button
-                    type="button"
-                    title="Adicionar 1"
-                    disabled={collectionBusy || !selectedSet}
-                    onClick={() => void handleAddToCollection()}
-                    className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:opacity-50"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                </div>
-                <Link
-                  to="/collection"
-                  className="block text-center text-xs text-[var(--color-accent)] hover:underline"
-                >
-                  Ver minha coleção
-                </Link>
-              </div>
+              <p className="text-xs text-[var(--color-muted)]">Verificando coleção...</p>
             ) : (
-              <button
-                type="button"
-                disabled={collectionBusy || !selectedSet}
-                onClick={() => void handleAddToCollection()}
-                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--color-accent)] px-3 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {collectionBusy ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <BookmarkPlus className="h-4 w-4" />
+              <>
+                {ownedItems.map((item) => {
+                  const busy = collectionBusyId === item.id
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60 p-4"
+                    >
+                      <p className="text-xs text-[var(--color-muted)]">
+                        Impressão:{' '}
+                        <span className="font-mono text-[var(--color-text)]">
+                          {item.set_code}
+                        </span>
+                        {item.set_rarity ? ` · ${item.set_rarity}` : ''}
+                      </p>
+                      {item.set_name ? (
+                        <p className="mt-0.5 line-clamp-2 text-[11px] text-[var(--color-muted)]">
+                          {item.set_name}
+                        </p>
+                      ) : null}
+                      <p className="mt-2 inline-flex items-center gap-1.5 text-sm text-[var(--color-success)]">
+                        <Check className="h-4 w-4" />
+                        Na coleção
+                      </p>
+                      <div className="mt-3 flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          title="Remover 1"
+                          disabled={Boolean(collectionBusyId)}
+                          onClick={() => void handleDecrementOwned(item)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 hover:text-red-300 disabled:opacity-50"
+                        >
+                          {busy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Minus className="h-4 w-4" />
+                          )}
+                        </button>
+                        <span
+                          className="min-w-10 text-center text-lg font-semibold tabular-nums"
+                          aria-live="polite"
+                        >
+                          {item.quantity}
+                        </span>
+                        <button
+                          type="button"
+                          title="Adicionar 1"
+                          disabled={Boolean(collectionBusyId)}
+                          onClick={() => void handleIncrementOwned(item)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:opacity-50"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {selectedSet && !selectedOwnedItem && (
+                  <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60 p-4">
+                    <p className="text-xs text-[var(--color-muted)]">
+                      Impressão selecionada:{' '}
+                      <span className="font-mono text-[var(--color-text)]">
+                        {selectedSet.set_code}
+                      </span>
+                      {selectedSet.set_rarity ? ` · ${selectedSet.set_rarity}` : ''}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={Boolean(collectionBusyId)}
+                      onClick={() => void handleAddImpression(selectedSet)}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--color-accent)] px-3 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {collectionBusyId?.startsWith('add:') ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <BookmarkPlus className="h-4 w-4" />
+                      )}
+                      Adicionar esta impressão
+                    </button>
+                  </div>
                 )}
-                Adicionar à coleção
-              </button>
+
+                {!collectionLoading && ownedItems.length === 0 && !selectedSet && (
+                  <p className="text-xs text-[var(--color-muted)]">
+                    Selecione uma versão para adicionar à coleção.
+                  </p>
+                )}
+              </>
             )}
 
             {collectionMessage && (
-              <p className="mt-2 text-xs text-[var(--color-muted)]">{collectionMessage}</p>
+              <p className="text-xs text-[var(--color-muted)]">{collectionMessage}</p>
             )}
+
+            <Link
+              to="/collection"
+              className="block text-center text-xs text-[var(--color-accent)] hover:underline"
+            >
+              Ver minha coleção
+            </Link>
           </div>
         </div>
 
@@ -399,27 +482,40 @@ export function CardDetailPage() {
                         set.set_code.toLowerCase() &&
                       selectedSet?.set_rarity === set.set_rarity &&
                       selectedSet?.set_name === set.set_name
+                    const albumUrl = `/collection?view=album&set=${encodeURIComponent(set.set_name)}`
                     return (
-                      <Link
+                      <div
                         key={`${set.set_code}-${set.set_rarity}-${set.set_name}`}
-                        to={`/cards/${card.id}?set=${encodeURIComponent(set.set_code)}&lang=${language}`}
                         className={[
-                          'flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition',
+                          'flex items-center gap-1 rounded-lg border pr-1 transition',
                           active
                             ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/20 text-[var(--color-text)]'
                             : 'border-transparent text-[var(--color-muted)] hover:border-[var(--color-border)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]',
                         ].join(' ')}
                       >
-                        <span className="font-mono text-xs font-semibold text-[var(--color-accent)]">
-                          {set.set_code}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-xs">
-                          {set.set_name}
-                        </span>
-                        <span className="shrink-0 text-xs opacity-80">
-                          {set.set_rarity || '—'}
-                        </span>
-                      </Link>
+                        <Link
+                          to={`/cards/${card.id}?set=${encodeURIComponent(set.set_code)}&lang=${language}`}
+                          className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"
+                        >
+                          <span className="font-mono text-xs font-semibold text-[var(--color-accent)]">
+                            {set.set_code}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {set.set_name}
+                          </span>
+                          <span className="shrink-0 text-xs opacity-80">
+                            {set.set_rarity || '—'}
+                          </span>
+                        </Link>
+                        <Link
+                          to={albumUrl}
+                          title={`Ver álbum: ${set.set_name}`}
+                          aria-label={`Ver álbum da coleção ${set.set_name}`}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--color-muted)] transition hover:bg-[var(--color-accent)]/15 hover:text-[var(--color-accent)]"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Link>
+                      </div>
                     )
                   })}
                 </div>

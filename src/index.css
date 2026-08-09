@@ -11,6 +11,10 @@
   --color-accent-hover: #2563eb;
   --color-danger: #ef4444;
   --color-success: #22c55e;
+  --scrollbar-size: 10px;
+  --scrollbar-track: color-mix(in srgb, var(--color-bg) 70%, var(--color-surface-2));
+  --scrollbar-thumb: color-mix(in srgb, var(--color-border) 55%, var(--color-accent) 45%);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-accent) 75%, white 10%);
 }
 
 * {
@@ -31,4 +35,47 @@ body {
     radial-gradient(ellipse 80% 50% at 20% -10%, rgba(59, 130, 246, 0.25), transparent),
     radial-gradient(ellipse 60% 40% at 90% 10%, rgba(14, 165, 233, 0.12), transparent),
     var(--color-bg);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Chromium / Safari / Edge */
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 55%, var(--color-border)),
+    color-mix(in srgb, var(--color-accent-hover) 70%, var(--color-surface-2))
+  );
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    var(--scrollbar-thumb-hover),
+    var(--color-accent-hover)
+  );
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, white 20%, transparent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
