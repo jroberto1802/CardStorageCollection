@@ -44,7 +44,7 @@ function extraTypeWeight(type: string | null, frameType: string | null): number 
 
 export function sortDeckSlotsByType(
   slots: DeckCardSlot[],
-  zone: 'main' | 'extra',
+  zone: 'main' | 'extra' | 'side',
 ): DeckCardSlot[] {
   const weight = zone === 'extra' ? extraTypeWeight : mainTypeWeight
 

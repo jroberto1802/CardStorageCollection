@@ -13,6 +13,7 @@ import {
   MAX_COPIES_PER_CARD,
   MAX_EXTRA_DECK,
   MAX_MAIN_DECK,
+  MAX_SIDE_DECK,
 } from '@/types'
 
 function mapDeck(row: Record<string, unknown>): Deck {
@@ -66,19 +67,25 @@ export async function listDecks(): Promise<DeckSummary[]> {
 
   if (cardsError) throw new Error(cardsError.message)
 
-  const counts = new Map<string, { main: number; extra: number }>()
+  const counts = new Map<string, { main: number; extra: number; side: number }>()
   for (const row of cards ?? []) {
     const deckId = String((row as { deck_id: string }).deck_id)
     const zone = (row as { zone: DeckZone }).zone
-    const current = counts.get(deckId) ?? { main: 0, extra: 0 }
+    const current = counts.get(deckId) ?? { main: 0, extra: 0, side: 0 }
     if (zone === 'extra') current.extra += 1
+    else if (zone === 'side') current.side += 1
     else current.main += 1
     counts.set(deckId, current)
   }
 
   return decks.map((deck) => {
-    const c = counts.get(deck.id) ?? { main: 0, extra: 0 }
-    return { ...deck, mainCount: c.main, extraCount: c.extra }
+    const c = counts.get(deck.id) ?? { main: 0, extra: 0, side: 0 }
+    return {
+      ...deck,
+      mainCount: c.main,
+      extraCount: c.extra,
+      sideCount: c.side,
+    }
   })
 }
 
@@ -191,8 +198,11 @@ export async function addCardToDeck(params: {
   race: string | null
   imageUrl: string | null
   imageUrlSmall: string | null
+  /** Força zona (ex.: drop no Side Deck / import da comunidade) */
+  forcedZone?: DeckZone
 }): Promise<AddCardResult> {
-  const zone = resolveDeckZone(params.type, params.frameType)
+  const zone =
+    params.forcedZone ?? resolveDeckZone(params.type, params.frameType)
 
   // FK (card_id, language) → cards: usa o idioma em que a carta realmente existe
   let cardLanguage = params.language
@@ -232,6 +242,9 @@ export async function addCardToDeck(params: {
   }
   if (zone === 'extra' && zoneCount >= MAX_EXTRA_DECK) {
     return { ok: false, reason: `Extra Deck cheio (máx. ${MAX_EXTRA_DECK}).` }
+  }
+  if (zone === 'side' && zoneCount >= MAX_SIDE_DECK) {
+    return { ok: false, reason: `Side Deck cheio (máx. ${MAX_SIDE_DECK}).` }
   }
 
   const zonePositions = rows

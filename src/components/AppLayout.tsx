@@ -8,6 +8,7 @@ import {
   Menu,
   Settings,
   User,
+  Users,
   X,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -31,7 +32,8 @@ const mobileNavClass = ({ isActive }: { isActive: boolean }) =>
 export function AppLayout() {
   const { user, signOut } = useAuth()
   const { pathname } = useLocation()
-  const wide = pathname.startsWith('/decks/')
+  const wide =
+    pathname.startsWith('/decks/') || pathname.startsWith('/community/')
 
   const [navOpen, setNavOpen] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)
@@ -84,6 +86,12 @@ export function AppLayout() {
               <span className="inline-flex items-center gap-1.5">
                 <Layers3 className="h-4 w-4" />
                 Decks
+              </span>
+            </NavLink>
+            <NavLink to="/community" className={linkClass}>
+              <span className="inline-flex items-center gap-1.5">
+                <Users className="h-4 w-4" />
+                Comunidade
               </span>
             </NavLink>
             <NavLink to="/settings" className={linkClass}>
@@ -180,6 +188,14 @@ export function AppLayout() {
               >
                 <Layers3 className="h-4 w-4" />
                 Decks
+              </NavLink>
+              <NavLink
+                to="/community"
+                className={mobileNavClass}
+                onClick={() => setNavOpen(false)}
+              >
+                <Users className="h-4 w-4" />
+                Comunidade
               </NavLink>
               <NavLink
                 to="/settings"

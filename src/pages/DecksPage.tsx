@@ -137,6 +137,15 @@ export function DecksPage() {
                   <span className="font-semibold text-[var(--color-text)]">
                     {deck.extraCount}
                   </span>
+                  {deck.sideCount > 0 && (
+                    <>
+                      {' · '}
+                      Side{' '}
+                      <span className="font-semibold text-[var(--color-text)]">
+                        {deck.sideCount}
+                      </span>
+                    </>
+                  )}
                 </p>
                 <p className="mt-1 text-xs text-[var(--color-muted)]">
                   Atualizado{' '}

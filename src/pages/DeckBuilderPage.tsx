@@ -83,6 +83,10 @@ export function DeckBuilderPage() {
     () => slots.filter((s) => s.zone === 'extra'),
     [slots],
   )
+  const sideSlots = useMemo(
+    () => slots.filter((s) => s.zone === 'side'),
+    [slots],
+  )
 
   const copiesByCard = useMemo(() => {
     const map = new Map<number, number>()
@@ -207,7 +211,10 @@ export function DeckBuilderPage() {
     }
   }
 
-  async function handleAdd(payload: DeckDragPayload) {
+  async function handleAdd(
+    payload: DeckDragPayload,
+    forcedZone?: 'main' | 'extra' | 'side',
+  ) {
     if (!deck || busy) return
     setBusy(true)
     setMessage(null)
@@ -222,6 +229,7 @@ export function DeckBuilderPage() {
         race: payload.race,
         imageUrl: payload.imageUrl,
         imageUrlSmall: payload.imageUrlSmall,
+        forcedZone,
       })
 
       if (!result.ok) {
@@ -339,7 +347,7 @@ export function DeckBuilderPage() {
             slots={mainSlots}
             ownedByCard={ownedByCard}
             columns={10}
-            onDropPayload={(payload) => void handleAdd(payload)}
+            onDropPayload={(payload) => void handleAdd(payload, 'main')}
             onRemove={(id) => void handleRemove(id)}
             onCardClick={(slot) => {
               setPreviewCardId(slot.card_id)
@@ -353,7 +361,21 @@ export function DeckBuilderPage() {
             slots={extraSlots}
             ownedByCard={ownedByCard}
             columns={10}
-            onDropPayload={(payload) => void handleAdd(payload)}
+            onDropPayload={(payload) => void handleAdd(payload, 'extra')}
+            onRemove={(id) => void handleRemove(id)}
+            onCardClick={(slot) => {
+              setPreviewCardId(slot.card_id)
+              setPreviewLanguage(slot.language)
+            }}
+          />
+
+          <DeckZonePanel
+            title="Side Deck"
+            zone="side"
+            slots={sideSlots}
+            ownedByCard={ownedByCard}
+            columns={10}
+            onDropPayload={(payload) => void handleAdd(payload, 'side')}
             onRemove={(id) => void handleRemove(id)}
             onCardClick={(slot) => {
               setPreviewCardId(slot.card_id)
@@ -362,9 +384,9 @@ export function DeckBuilderPage() {
           />
 
           <p className="text-[11px] text-[var(--color-muted)]">
-            Fusion, Synchro, Xyz e Link vão automaticamente para o Extra Deck.
-            Máximo de 3 cópias da mesma carta. Clique na carta para ver detalhes;
-            no X para remover.
+            Fusion, Synchro, Xyz e Link vão automaticamente para o Extra Deck (ou
+            solte no Side). Máximo de 3 cópias da mesma carta. Clique na carta para
+            ver detalhes; no X para remover.
           </p>
         </div>
 

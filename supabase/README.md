@@ -7,10 +7,14 @@
 3. Cole o conteúdo de `migrations/002_collection_items.sql` e execute (necessário para **Minha coleção**)
 4. Cole o conteúdo de `migrations/003_decks.sql` e execute (necessário para **Decks**)
 5. Cole o conteúdo de `migrations/004_card_images_storage.sql` e execute (bucket **card-images** + leitura pública)
+6. Cole o conteúdo de `migrations/005_mdm_deck_sync.sql` e execute (decks sincronizados MDM + progresso retomável)
+7. Cole o conteúdo de `migrations/006_deck_side_zone.sql` e execute (zona **side** em `deck_cards`)
 
 A migration `002` cria a tabela `collection_items` (inventário por impressão: card + set_code + raridade) com RLS por usuário.
 A migration `003` cria `decks` e `deck_cards` (construção de deck; 1 linha = 1 cópia).
 A migration `004` cria o bucket `card-images` no Storage (miniaturas do catálogo + full sob demanda).
+A migration `005` cria `synced_decks`, `synced_deck_cards` e `deck_sync_runs` (top decks Master Duel Meta).
+A migration `006` amplia `deck_cards.zone` para incluir `side` (Side Deck até 15).
 
 ## 2. Deploy das Edge Functions
 
@@ -23,6 +27,7 @@ npx supabase login
 # Deploy direto com --project-ref e --use-api (não precisa de Docker):
 npx supabase functions deploy sync-cards --project-ref ytbnhmqwcrjkglauromc --use-api
 npx supabase functions deploy sync-card-images --project-ref ytbnhmqwcrjkglauromc --use-api
+npx supabase functions deploy sync-mdm-decks --project-ref ytbnhmqwcrjkglauromc --use-api
 
 # Alternativa: pin da CLI estável
 # npx supabase@2.111.0 link --project-ref ytbnhmqwcrjkglauromc
@@ -30,6 +35,7 @@ npx supabase functions deploy sync-card-images --project-ref ytbnhmqwcrjkglaurom
 
 - `sync-cards` — metadados do catálogo (preserva URLs já espelhadas no Storage)
 - `sync-card-images` — espelha `image_url_small` em lotes; `mode=full` no detalhe da carta
+- `sync-mdm-decks` — sincroniza top decks do Master Duel Meta em lotes retomáveis
 
 As variáveis `SUPABASE_URL`, `SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`
 já são injetadas automaticamente no runtime das Edge Functions hospedadas.
@@ -52,5 +58,6 @@ npm run dev
 Em **Configurações**, use:
 1. **Sincronizar cards** (metadados)
 2. **Sincronizar miniaturas** (Storage; respeita limite soft ~900 MB no Free)
+3. **Sincronizar decks** (Master Duel Meta top-decks; retomável)
 
 Credenciais do app ficam em `.env.local` (já no `.gitignore`).
