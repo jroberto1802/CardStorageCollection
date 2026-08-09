@@ -363,6 +363,29 @@ export async function getCardById(
   return null
 }
 
+/** Idiomas em que a carta existe no catálogo (pt / en). */
+export async function getAvailableCardLanguages(
+  cardId: number,
+): Promise<AppLanguage[]> {
+  const { data, error } = await supabase
+    .from('cards')
+    .select('language')
+    .eq('id', cardId)
+
+  if (error) throw new Error(error.message)
+
+  const langs = new Set<AppLanguage>()
+  for (const row of data ?? []) {
+    const lang = (row as { language: string }).language
+    if (lang === 'pt' || lang === 'en') langs.add(lang)
+  }
+
+  const ordered: AppLanguage[] = []
+  if (langs.has('pt')) ordered.push('pt')
+  if (langs.has('en')) ordered.push('en')
+  return ordered
+}
+
 /** Cartas que possuem impressão com o set_name informado (álbum) */
 export async function getCardsBySetName(
   language: AppLanguage,

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Loader2, Search, Users, X } from 'lucide-react'
+import { ArrowDownWideNarrow, Loader2, Search, Users, X } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useSettings } from '@/contexts/SettingsContext'
 import { searchCatalog } from '@/services/catalogService'
@@ -58,6 +58,7 @@ export function CommunityDecksPage() {
   const [cardPickerOpen, setCardPickerOpen] = useState(false)
   const cardPickerRef = useRef<HTMLDivElement>(null)
 
+  const [sortByOwned, setSortByOwned] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hasAny, setHasAny] = useState<boolean | null>(null)
@@ -115,61 +116,87 @@ export function CommunityDecksPage() {
     }
   }, [debouncedCardText, language, selectedCard])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const totalAll = await countSyncedDecks()
-      setHasAny(totalAll > 0)
+  useEffect(() => {
+    setPage(1)
+  }, [
+    debouncedSearch,
+    debouncedType,
+    debouncedCardText,
+    selectedCard,
+    language,
+    sortByOwned,
+  ])
 
-      let containsCardIds: number[] | undefined
-      let containsCardName: string | undefined
+  useEffect(() => {
+    let cancelled = false
 
-      if (selectedCard) {
-        containsCardIds = [selectedCard.cardId]
-        containsCardName = selectedCard.name
-      } else {
-        const q = debouncedCardText.trim()
-        if (q.length >= 2) {
-          containsCardName = q
-          try {
-            const catalog = await searchCatalog({
-              language,
-              query: q,
-              filters: DEFAULT_CATALOG_FILTERS,
-              sort: 'name_asc',
-              page: 0,
-              pageSize: 20,
-            })
-            containsCardIds = [
-              ...new Set(catalog.items.map((item) => item.cardId)),
-            ]
-          } catch {
-            containsCardIds = undefined
+    async function load() {
+      setLoading(true)
+      setError(null)
+      try {
+        const totalAll = await countSyncedDecks()
+        if (cancelled) return
+        setHasAny(totalAll > 0)
+
+        let containsCardIds: number[] | undefined
+        let containsCardName: string | undefined
+
+        if (selectedCard) {
+          containsCardIds = [selectedCard.cardId]
+          containsCardName = selectedCard.name
+        } else {
+          const q = debouncedCardText.trim()
+          if (q.length >= 2) {
+            containsCardName = q
+            try {
+              const catalog = await searchCatalog({
+                language,
+                query: q,
+                filters: DEFAULT_CATALOG_FILTERS,
+                sort: 'name_asc',
+                page: 0,
+                pageSize: 20,
+              })
+              containsCardIds = [
+                ...new Set(catalog.items.map((item) => item.cardId)),
+              ]
+            } catch {
+              containsCardIds = undefined
+            }
           }
         }
-      }
 
-      const result = await listSyncedDecks({
-        search: debouncedSearch,
-        deckType: debouncedType,
-        containsCardIds,
-        containsCardName,
-        page,
-        pageSize: PAGE_SIZE,
-      })
-      setItems(result.items)
-      setTotal(result.total)
-    } catch (err) {
-      setItems([])
-      setTotal(0)
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Falha ao listar decks. Aplique as migrations 005 e 006 no Supabase.',
-      )
-    } finally {
-      setLoading(false)
+        if (cancelled) return
+
+        const result = await listSyncedDecks({
+          search: debouncedSearch,
+          deckType: debouncedType,
+          containsCardIds,
+          containsCardName,
+          sortByOwned,
+          page,
+          pageSize: PAGE_SIZE,
+        })
+        if (cancelled) return
+        setItems(result.items)
+        setTotal(result.total)
+      } catch (err) {
+        if (cancelled) return
+        setItems([])
+        setTotal(0)
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Falha ao listar decks. Aplique as migrations 005 e 006 no Supabase.',
+        )
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
     }
   }, [
     debouncedSearch,
@@ -177,16 +204,9 @@ export function CommunityDecksPage() {
     debouncedCardText,
     selectedCard,
     language,
+    sortByOwned,
     page,
   ])
-
-  useEffect(() => {
-    setPage(1)
-  }, [debouncedSearch, debouncedType, debouncedCardText, selectedCard])
-
-  useEffect(() => {
-    void load()
-  }, [load])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -233,6 +253,37 @@ export function CommunityDecksPage() {
             placeholder="Filtrar arquétipo (ex.: Zoodiac)"
             className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2.5 text-sm outline-none ring-[var(--color-accent)] focus:ring-2 sm:max-w-xs"
           />
+          <label
+            title="Analisa todos os decks e coloca os que você mais tem primeiro (mais lento)"
+            className={[
+              'inline-flex h-[42px] shrink-0 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm select-none transition',
+              sortByOwned
+                ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-text)]'
+                : 'border-[var(--color-border)] text-[var(--color-muted)] hover:bg-[var(--color-surface-2)]',
+            ].join(' ')}
+          >
+            <ArrowDownWideNarrow className="h-4 w-4 shrink-0" />
+            <span>Ordenar por posse</span>
+            <span
+              className={[
+                'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition',
+                sortByOwned ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]',
+              ].join(' ')}
+            >
+              <span
+                className={[
+                  'inline-block h-4 w-4 rounded-full bg-white shadow transition',
+                  sortByOwned ? 'translate-x-4' : 'translate-x-0.5',
+                ].join(' ')}
+              />
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={sortByOwned}
+                onChange={(e) => setSortByOwned(e.target.checked)}
+              />
+            </span>
+          </label>
         </div>
 
         <div className="relative" ref={cardPickerRef}>
@@ -320,7 +371,9 @@ export function CommunityDecksPage() {
       {loading && (
         <p className="inline-flex items-center gap-2 text-sm text-[var(--color-muted)]">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Carregando comunidade...
+          {sortByOwned
+            ? 'Ordenando por posse (pode demorar)...'
+            : 'Carregando comunidade...'}
         </p>
       )}
 

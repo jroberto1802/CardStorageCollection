@@ -11,7 +11,10 @@ import {
   Plus,
 } from 'lucide-react'
 import { useSettings } from '@/contexts/SettingsContext'
-import { getCardById } from '@/services/catalogService'
+import {
+  getAvailableCardLanguages,
+  getCardById,
+} from '@/services/catalogService'
 import {
   addToCollection,
   listCollectionItemsByCardId,
@@ -58,6 +61,7 @@ export function CardDetailPage() {
   const [collectionLoading, setCollectionLoading] = useState(false)
   const [collectionBusyId, setCollectionBusyId] = useState<string | null>(null)
   const [collectionMessage, setCollectionMessage] = useState<string | null>(null)
+  const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
 
   useEffect(() => {
     let mounted = true
@@ -74,8 +78,18 @@ export function CardDetailPage() {
       setError(null)
 
       try {
-        let data = await getCardById(id, language)
+        const [langs, loaded] = await Promise.all([
+          getAvailableCardLanguages(id),
+          getCardById(id, language, { fallbackToEn: false }).then(async (exact) => {
+            if (exact) return exact
+            return getCardById(id, language)
+          }),
+        ])
         if (!mounted) return
+
+        setAvailableLanguages(langs)
+
+        let data = loaded
         if (!data) {
           setError('Carta não encontrada neste idioma.')
           setCard(null)
@@ -93,7 +107,9 @@ export function CardDetailPage() {
                 card_images: mirror.card_images as CardImage[],
               }
             } else if (mirror.success) {
-              const refreshed = await getCardById(data.id, data.language)
+              const refreshed = await getCardById(data.id, data.language, {
+                fallbackToEn: false,
+              })
               if (refreshed) data = refreshed
             }
           }
@@ -120,6 +136,13 @@ export function CardDetailPage() {
       mounted = false
     }
   }, [cardId, language])
+
+  function switchLanguage(nextLang: AppLanguage) {
+    if (nextLang === language) return
+    const next = new URLSearchParams(searchParams)
+    next.set('lang', nextLang)
+    navigate(`/cards/${cardId}?${next.toString()}`)
+  }
 
   const sets = useMemo(() => (card ? parseCardSets(card.card_sets) : []), [card])
   const selectedSet: CardSet | null = useMemo(() => {
@@ -463,7 +486,32 @@ export function CardDetailPage() {
               />
               <DetailRow label="Edição" value={selectedSet?.set_name ?? '—'} />
               <DetailRow label="Raridade" value={selectedSet?.set_rarity ?? '—'} />
-              <DetailRow label="Idioma" value={languageLabel(card.language)} />
+              <DetailRow
+                label="Idioma"
+                value={
+                  availableLanguages.length > 1 ? (
+                    <div className="inline-flex rounded-lg border border-[var(--color-border)] p-0.5">
+                      {availableLanguages.map((lang) => (
+                        <button
+                          key={lang}
+                          type="button"
+                          onClick={() => switchLanguage(lang)}
+                          className={[
+                            'rounded-md px-2.5 py-1 text-xs font-medium transition',
+                            card.language === lang
+                              ? 'bg-[var(--color-accent)] text-white'
+                              : 'text-[var(--color-muted)] hover:text-[var(--color-text)]',
+                          ].join(' ')}
+                        >
+                          {languageLabel(lang)}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    languageLabel(card.language)
+                  )
+                }
+              />
               <DetailRow
                 label="Região"
                 value={region === 'Unknown' ? 'Não identificado' : region}
@@ -494,7 +542,7 @@ export function CardDetailPage() {
                         ].join(' ')}
                       >
                         <Link
-                          to={`/cards/${card.id}?set=${encodeURIComponent(set.set_code)}&lang=${language}`}
+                          to={`/cards/${card.id}?set=${encodeURIComponent(set.set_code)}&lang=${card.language}`}
                           className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"
                         >
                           <span className="font-mono text-xs font-semibold text-[var(--color-accent)]">

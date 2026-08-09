@@ -142,14 +142,14 @@ export async function findSyncedDeckIdsContainingCard(params: {
   if (cardIds.length === 0 && !cardName) return []
 
   const ids = new Set<string>()
-  const pageSize = 1000
   let from = 0
 
-  for (;;) {
+  for (let round = 0; round < MAX_PAGE_ROUNDS; round += 1) {
     let cardQuery = supabase
       .from('synced_deck_cards')
       .select('deck_id')
-      .range(from, from + pageSize - 1)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_FETCH - 1)
 
     if (cardIds.length > 0 && cardName) {
       const idList = cardIds.join(',')
@@ -169,11 +169,317 @@ export async function findSyncedDeckIdsContainingCard(params: {
     for (const row of data) {
       ids.add(String((row as { deck_id: string }).deck_id))
     }
-    if (data.length < pageSize) break
-    from += pageSize
+    if (data.length < PAGE_FETCH) break
+    from += PAGE_FETCH
   }
 
   return [...ids]
+}
+
+const PAGE_FETCH = 1000
+const MAX_PAGE_ROUNDS = 200
+
+type SyncedCardAggRow = {
+  deck_id: string
+  card_id: number | null
+  zone: DeckZone
+  quantity: number
+}
+
+function mapCardAggRow(row: Record<string, unknown>): SyncedCardAggRow {
+  const cardIdRaw = row.card_id
+  return {
+    deck_id: String(row.deck_id),
+    card_id:
+      cardIdRaw == null || !Number.isFinite(Number(cardIdRaw))
+        ? null
+        : Number(cardIdRaw),
+    zone: row.zone as DeckZone,
+    quantity: Math.max(1, Number(row.quantity) || 1),
+  }
+}
+
+/** Coleção leve: só card_id + quantity (evita puxar colunas extras). */
+async function fetchOwnedQuantityMap(): Promise<Map<number, number>> {
+  const map = new Map<number, number>()
+  let from = 0
+
+  for (let round = 0; round < MAX_PAGE_ROUNDS; round += 1) {
+    const { data, error } = await supabase
+      .from('collection_items')
+      .select('card_id, quantity')
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_FETCH - 1)
+
+    if (error) throw new Error(error.message)
+    if (!data?.length) break
+
+    for (const row of data) {
+      const cardId = Number((row as { card_id: number }).card_id)
+      const qty = Number((row as { quantity: number }).quantity) || 0
+      if (!Number.isFinite(cardId) || qty <= 0) continue
+      map.set(cardId, (map.get(cardId) ?? 0) + qty)
+    }
+
+    if (data.length < PAGE_FETCH) break
+    from += PAGE_FETCH
+  }
+
+  return map
+}
+
+async function fetchSyncedDecksPage(params: {
+  deckIds?: string[]
+  search?: string
+  deckType?: string
+  from: number
+  pageSize: number
+}): Promise<SyncedDeck[]> {
+  let query = supabase
+    .from('synced_decks')
+    .select('*')
+    .order('id', { ascending: true })
+    .range(params.from, params.from + params.pageSize - 1)
+
+  if (params.deckIds) {
+    query = query.in('id', params.deckIds)
+  }
+
+  const search = params.search?.trim()
+  if (search) {
+    const safe = sanitizeIlikeTerm(search)
+    if (safe) {
+      const pattern = `%${safe}%`
+      query = query.or(
+        `name.ilike.${pattern},author_name.ilike.${pattern},deck_type.ilike.${pattern}`,
+      )
+    }
+  }
+
+  const deckType = params.deckType?.trim()
+  if (deckType) {
+    query = query.ilike('deck_type', deckType)
+  }
+
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row) => mapSyncedDeck(row as Record<string, unknown>))
+}
+
+async function fetchAllSyncedDecksMatching(params: {
+  deckIdFilter: string[] | null
+  search?: string
+  deckType?: string
+}): Promise<SyncedDeck[]> {
+  const idChunkSize = 100
+
+  async function fetchAllPages(deckIds?: string[]): Promise<SyncedDeck[]> {
+    const decks: SyncedDeck[] = []
+    let from = 0
+    for (let round = 0; round < MAX_PAGE_ROUNDS; round += 1) {
+      const batch = await fetchSyncedDecksPage({
+        deckIds,
+        search: params.search,
+        deckType: params.deckType,
+        from,
+        pageSize: PAGE_FETCH,
+      })
+      if (batch.length === 0) break
+      decks.push(...batch)
+      if (batch.length < PAGE_FETCH) break
+      from += PAGE_FETCH
+    }
+    return decks
+  }
+
+  if (!params.deckIdFilter) {
+    return fetchAllPages()
+  }
+
+  const decks: SyncedDeck[] = []
+  for (let i = 0; i < params.deckIdFilter.length; i += idChunkSize) {
+    const idChunk = params.deckIdFilter.slice(i, i + idChunkSize)
+    decks.push(...(await fetchAllPages(idChunk)))
+  }
+  return decks
+}
+
+/**
+ * Busca linhas de cartas com order estável (evita loop infinito do .range sem order)
+ * e páginas em paralelo após o count.
+ */
+async function fetchSyncedDeckCardRows(
+  deckIds: string[],
+): Promise<SyncedCardAggRow[]> {
+  if (deckIds.length === 0) return []
+
+  const wanted = new Set(deckIds)
+  // Se há poucos decks, filtra no servidor; se muitos, varre a tabela e filtra no cliente.
+  const useServerFilter = deckIds.length <= 80
+
+  if (useServerFilter) {
+    const rows: SyncedCardAggRow[] = []
+    let from = 0
+    for (let round = 0; round < MAX_PAGE_ROUNDS; round += 1) {
+      const { data, error } = await supabase
+        .from('synced_deck_cards')
+        .select('deck_id, card_id, zone, quantity')
+        .in('deck_id', deckIds)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_FETCH - 1)
+
+      if (error) throw new Error(error.message)
+      if (!data?.length) break
+
+      for (const row of data) {
+        rows.push(mapCardAggRow(row as Record<string, unknown>))
+      }
+      if (data.length < PAGE_FETCH) break
+      from += PAGE_FETCH
+    }
+    return rows
+  }
+
+  const { count, error: countError } = await supabase
+    .from('synced_deck_cards')
+    .select('id', { count: 'exact', head: true })
+
+  if (countError) throw new Error(countError.message)
+  const total = count ?? 0
+  if (total === 0) return []
+
+  const pageCount = Math.min(MAX_PAGE_ROUNDS, Math.ceil(total / PAGE_FETCH))
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, async (_, pageIndex) => {
+      const from = pageIndex * PAGE_FETCH
+      const { data, error } = await supabase
+        .from('synced_deck_cards')
+        .select('deck_id, card_id, zone, quantity')
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_FETCH - 1)
+
+      if (error) throw new Error(error.message)
+      return (data ?? []).map((row) =>
+        mapCardAggRow(row as Record<string, unknown>),
+      )
+    }),
+  )
+
+  const rows: SyncedCardAggRow[] = []
+  for (const page of pages) {
+    for (const row of page) {
+      if (wanted.has(row.deck_id)) rows.push(row)
+    }
+  }
+  return rows
+}
+
+function ownershipRatio(owned: number, total: number): number {
+  if (total <= 0) return 0
+  return owned / total
+}
+
+/** Ordena por cópias possuídas (desc), depois % posse, depois updated_at. */
+export function sortSyncedDecksByOwned(items: SyncedDeckSummary[]): SyncedDeckSummary[] {
+  return [...items].sort((a, b) => {
+    if (b.ownedCount !== a.ownedCount) return b.ownedCount - a.ownedCount
+    const ratioDiff =
+      ownershipRatio(b.ownedCount, b.totalCount) -
+      ownershipRatio(a.ownedCount, a.totalCount)
+    if (ratioDiff !== 0) return ratioDiff
+    return b.updated_at.localeCompare(a.updated_at)
+  })
+}
+
+function buildSummaries(
+  decks: SyncedDeck[],
+  cardRows: SyncedCardAggRow[],
+  ownedQty: Map<number, number>,
+): SyncedDeckSummary[] {
+  type Agg = {
+    main: number
+    extra: number
+    side: number
+    lines: OwnershipLine[]
+  }
+  const byDeck = new Map<string, Agg>()
+
+  for (const row of cardRows) {
+    const agg = byDeck.get(row.deck_id) ?? {
+      main: 0,
+      extra: 0,
+      side: 0,
+      lines: [],
+    }
+
+    if (row.zone === 'extra') agg.extra += row.quantity
+    else if (row.zone === 'side') agg.side += row.quantity
+    else agg.main += row.quantity
+
+    agg.lines.push({ cardId: row.card_id, quantity: row.quantity })
+    byDeck.set(row.deck_id, agg)
+  }
+
+  return decks.map((deck) => {
+    const agg = byDeck.get(deck.id) ?? {
+      main: 0,
+      extra: 0,
+      side: 0,
+      lines: [],
+    }
+    const ownership = computeOwnership(agg.lines, ownedQty)
+    return {
+      ...deck,
+      mainCount: agg.main,
+      extraCount: agg.extra,
+      sideCount: agg.side,
+      ownedCount: ownership.ownedCount,
+      totalCount: ownership.totalCount,
+      unresolvedCount: ownership.unresolvedCount,
+    }
+  })
+}
+
+async function fetchSyncedDecksPageByUpdatedAt(params: {
+  deckIds?: string[]
+  search?: string
+  deckType?: string
+  from: number
+  pageSize: number
+}): Promise<{ decks: SyncedDeck[]; total: number }> {
+  let query = supabase
+    .from('synced_decks')
+    .select('*', { count: 'exact' })
+    .order('updated_at', { ascending: false })
+    .range(params.from, params.from + params.pageSize - 1)
+
+  if (params.deckIds) {
+    query = query.in('id', params.deckIds)
+  }
+
+  const search = params.search?.trim()
+  if (search) {
+    const safe = sanitizeIlikeTerm(search)
+    if (safe) {
+      const pattern = `%${safe}%`
+      query = query.or(
+        `name.ilike.${pattern},author_name.ilike.${pattern},deck_type.ilike.${pattern}`,
+      )
+    }
+  }
+
+  const deckType = params.deckType?.trim()
+  if (deckType) {
+    query = query.ilike('deck_type', deckType)
+  }
+
+  const { data, error, count } = await query
+  if (error) throw new Error(error.message)
+
+  return {
+    decks: (data ?? []).map((row) => mapSyncedDeck(row as Record<string, unknown>)),
+    total: count ?? 0,
+  }
 }
 
 export async function listSyncedDecks(params: {
@@ -185,13 +491,15 @@ export async function listSyncedDecks(params: {
   containsCardIds?: number[]
   /** Também casa por mdm_card_name (cartas sem card_id). */
   containsCardName?: string
+  /** Quando true, ordena todos os resultados por posse (mais lento). */
+  sortByOwned?: boolean
   page?: number
   pageSize?: number
 }): Promise<{ items: SyncedDeckSummary[]; total: number }> {
   const page = Math.max(1, params.page ?? 1)
   const pageSize = Math.min(60, Math.max(1, params.pageSize ?? 24))
   const from = (page - 1) * pageSize
-  const to = from + pageSize - 1
+  const sortByOwned = Boolean(params.sortByOwned)
 
   const cardIds = [
     ...new Set(
@@ -214,104 +522,77 @@ export async function listSyncedDecks(params: {
     }
   }
 
-  let query = supabase
-    .from('synced_decks')
-    .select('*', { count: 'exact' })
-    .order('updated_at', { ascending: false })
-    .range(from, to)
+  // Caminho lento: precisa de todos os decks + cartas para ordenar por posse.
+  if (sortByOwned) {
+    const decks = await fetchAllSyncedDecksMatching({
+      deckIdFilter,
+      search: params.search,
+      deckType: params.deckType,
+    })
 
-  if (deckIdFilter) {
-    query = query.in('id', deckIdFilter)
-  }
-
-  const search = params.search?.trim()
-  if (search) {
-    const safe = sanitizeIlikeTerm(search)
-    if (safe) {
-      const pattern = `%${safe}%`
-      query = query.or(
-        `name.ilike.${pattern},author_name.ilike.${pattern},deck_type.ilike.${pattern}`,
-      )
-    }
-  }
-
-  const deckType = params.deckType?.trim()
-  if (deckType) {
-    query = query.ilike('deck_type', deckType)
-  }
-
-  const { data, error, count } = await query
-  if (error) throw new Error(error.message)
-
-  const decks = (data ?? []).map((row) => mapSyncedDeck(row as Record<string, unknown>))
-  if (decks.length === 0) {
-    return { items: [], total: count ?? 0 }
-  }
-
-  const deckIds = decks.map((d) => d.id)
-  const { data: cardRows, error: cardsError } = await supabase
-    .from('synced_deck_cards')
-    .select('deck_id, card_id, zone, quantity')
-    .in('deck_id', deckIds)
-
-  if (cardsError) throw new Error(cardsError.message)
-
-  const ownedItems = await listCollectionItems()
-  const ownedQty = ownedQuantityByCardId(ownedItems)
-
-  type Agg = {
-    main: number
-    extra: number
-    side: number
-    lines: OwnershipLine[]
-  }
-  const byDeck = new Map<string, Agg>()
-
-  for (const row of cardRows ?? []) {
-    const deckId = String((row as { deck_id: string }).deck_id)
-    const zone = (row as { zone: DeckZone }).zone
-    const quantity = Math.max(1, Number((row as { quantity: number }).quantity) || 1)
-    const cardIdRaw = (row as { card_id: number | null }).card_id
-    const cardId =
-      cardIdRaw == null || !Number.isFinite(Number(cardIdRaw))
-        ? null
-        : Number(cardIdRaw)
-
-    const agg = byDeck.get(deckId) ?? {
-      main: 0,
-      extra: 0,
-      side: 0,
-      lines: [],
+    if (decks.length === 0) {
+      return { items: [], total: 0 }
     }
 
-    if (zone === 'extra') agg.extra += quantity
-    else if (zone === 'side') agg.side += quantity
-    else agg.main += quantity
+    const [cardRows, ownedQty] = await Promise.all([
+      fetchSyncedDeckCardRows(decks.map((d) => d.id)),
+      fetchOwnedQuantityMap(),
+    ])
 
-    agg.lines.push({ cardId, quantity })
-    byDeck.set(deckId, agg)
-  }
-
-  const items: SyncedDeckSummary[] = decks.map((deck) => {
-    const agg = byDeck.get(deck.id) ?? {
-      main: 0,
-      extra: 0,
-      side: 0,
-      lines: [],
-    }
-    const ownership = computeOwnership(agg.lines, ownedQty)
+    const summaries = buildSummaries(decks, cardRows, ownedQty)
+    const sorted = sortSyncedDecksByOwned(summaries)
     return {
-      ...deck,
-      mainCount: agg.main,
-      extraCount: agg.extra,
-      sideCount: agg.side,
-      ownedCount: ownership.ownedCount,
-      totalCount: ownership.totalCount,
-      unresolvedCount: ownership.unresolvedCount,
+      items: sorted.slice(from, from + pageSize),
+      total: sorted.length,
     }
+  }
+
+  // Caminho rápido: pagina no banco; posse só da página atual (badge).
+  // Com filtro de carta e muitos IDs, pagina em memória só esses IDs filtrados.
+  if (deckIdFilter && deckIdFilter.length > 80) {
+    const decks = await fetchAllSyncedDecksMatching({
+      deckIdFilter,
+      search: params.search,
+      deckType: params.deckType,
+    })
+    decks.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    const pageDecks = decks.slice(from, from + pageSize)
+    if (pageDecks.length === 0) {
+      return { items: [], total: decks.length }
+    }
+
+    const [cardRows, ownedQty] = await Promise.all([
+      fetchSyncedDeckCardRows(pageDecks.map((d) => d.id)),
+      fetchOwnedQuantityMap(),
+    ])
+
+    return {
+      items: buildSummaries(pageDecks, cardRows, ownedQty),
+      total: decks.length,
+    }
+  }
+
+  const { decks, total } = await fetchSyncedDecksPageByUpdatedAt({
+    deckIds: deckIdFilter ?? undefined,
+    search: params.search,
+    deckType: params.deckType,
+    from,
+    pageSize,
   })
 
-  return { items, total: count ?? items.length }
+  if (decks.length === 0) {
+    return { items: [], total }
+  }
+
+  const [cardRows, ownedQty] = await Promise.all([
+    fetchSyncedDeckCardRows(decks.map((d) => d.id)),
+    fetchOwnedQuantityMap(),
+  ])
+
+  return {
+    items: buildSummaries(decks, cardRows, ownedQty),
+    total,
+  }
 }
 
 export async function getSyncedDeck(id: string): Promise<SyncedDeckDetail | null> {

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Check, ExternalLink, Loader2, Package, X } from 'lucide-react'
-import { getCardById } from '@/services/catalogService'
+import {
+  getAvailableCardLanguages,
+  getCardById,
+} from '@/services/catalogService'
 import { listCollectionItemsByCardId } from '@/services/collectionService'
 import type { AppLanguage, Card, CardSet, CollectionItem } from '@/types'
 import {
@@ -23,6 +26,8 @@ export function DeckCardPreviewModal({
   language,
   onClose,
 }: DeckCardPreviewModalProps) {
+  const [viewLanguage, setViewLanguage] = useState<AppLanguage>(language)
+  const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
   const [card, setCard] = useState<Card | null>(null)
   const [ownedItems, setOwnedItems] = useState<CollectionItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -35,8 +40,16 @@ export function DeckCardPreviewModal({
       setOwnedItems([])
       setError(null)
       setShowSources(false)
+      setAvailableLanguages([])
+      setViewLanguage(language)
       return
     }
+
+    setViewLanguage(language)
+  }, [open, cardId, language])
+
+  useEffect(() => {
+    if (!open || cardId == null) return
 
     let mounted = true
 
@@ -45,18 +58,30 @@ export function DeckCardPreviewModal({
       setError(null)
       setShowSources(false)
       try {
-        const [cardData, owned] = await Promise.all([
-          getCardById(cardId!, language),
+        const [langs, cardData, owned] = await Promise.all([
+          getAvailableCardLanguages(cardId!),
+          getCardById(cardId!, viewLanguage, { fallbackToEn: false }).then(
+            async (exact) => exact ?? getCardById(cardId!, viewLanguage),
+          ),
           listCollectionItemsByCardId(cardId!),
         ])
         if (!mounted) return
+
+        setAvailableLanguages(langs)
+        setOwnedItems(owned)
+
         if (!cardData) {
           setError('Carta não encontrada.')
           setCard(null)
-          setOwnedItems([])
         } else {
           setCard(cardData)
-          setOwnedItems(owned)
+          // Se o idioma pedido não existe, alinha o toggle ao idioma carregado.
+          if (
+            !langs.includes(viewLanguage) &&
+            cardData.language !== viewLanguage
+          ) {
+            setViewLanguage(cardData.language)
+          }
         }
       } catch (err) {
         if (!mounted) return
@@ -72,7 +97,7 @@ export function DeckCardPreviewModal({
     return () => {
       mounted = false
     }
-  }, [open, cardId, language])
+  }, [open, cardId, viewLanguage])
 
   const sets = useMemo(
     () => (card ? parseCardSets(card.card_sets) : []),
@@ -88,7 +113,7 @@ export function DeckCardPreviewModal({
   }, [ownedItems])
 
   const images = card ? getPrimaryImage(card) : { full: null, small: null }
-  const detailLang = card?.language ?? language
+  const detailLang = card?.language ?? viewLanguage
 
   if (!open || cardId == null) return null
 
@@ -172,9 +197,34 @@ export function DeckCardPreviewModal({
                       Link {card.linkval}
                     </p>
                   )}
-                  <p className="text-xs text-[var(--color-muted)]">
-                    Idioma: {languageLabel(card.language)}
-                  </p>
+
+                  {availableLanguages.length > 1 ? (
+                    <div className="pt-0.5">
+                      <p className="mb-1 text-xs text-[var(--color-muted)]">Idioma</p>
+                      <div className="inline-flex rounded-lg border border-[var(--color-border)] p-0.5">
+                        {availableLanguages.map((lang) => (
+                          <button
+                            key={lang}
+                            type="button"
+                            onClick={() => setViewLanguage(lang)}
+                            className={[
+                              'rounded-md px-2.5 py-1 text-xs font-medium transition',
+                              viewLanguage === lang
+                                ? 'bg-[var(--color-accent)] text-white'
+                                : 'text-[var(--color-muted)] hover:text-[var(--color-text)]',
+                            ].join(' ')}
+                          >
+                            {languageLabel(lang)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[var(--color-muted)]">
+                      Idioma: {languageLabel(card.language)}
+                    </p>
+                  )}
+
                   {ownedItems.length > 0 ? (
                     <p className="inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
                       <Check className="h-3.5 w-3.5" />

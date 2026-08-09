@@ -6,21 +6,29 @@ import {
   ExternalLink,
   Loader2,
 } from 'lucide-react'
+import { DeckCardPreviewModal } from '@/components/deck/DeckCardPreviewModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
   getSyncedDeck,
   importSyncedDeckToUserDeck,
 } from '@/services/syncedDeckService'
-import type { DeckZone, SyncedDeckCardRow, SyncedDeckDetail } from '@/types'
+import type {
+  AppLanguage,
+  DeckZone,
+  SyncedDeckCardRow,
+  SyncedDeckDetail,
+} from '@/types'
 
 function ZoneSection({
   title,
   zone,
   cards,
+  onCardClick,
 }: {
   title: string
   zone: DeckZone
   cards: SyncedDeckCardRow[]
+  onCardClick: (card: SyncedDeckCardRow) => void
 }) {
   const zoneCards = cards.filter((c) => c.zone === zone)
   if (zoneCards.length === 0) return null
@@ -46,31 +54,46 @@ function ZoneSection({
         </span>
       </div>
       <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-8 md:grid-cols-10">
-        {copies.map(({ card, slotOwned }, index) => (
-          <div
-            key={`${card.id}-${index}`}
-            title={`${card.name}${slotOwned ? '' : ' (não possui)'}`}
-            className={[
-              'relative overflow-hidden rounded-md border bg-[var(--color-surface-2)]',
-              slotOwned
-                ? 'border-[var(--color-accent)]/40'
-                : 'border-[var(--color-border)] opacity-40',
-            ].join(' ')}
-          >
-            {card.imageUrlSmall || card.imageUrl ? (
-              <img
-                src={card.imageUrlSmall ?? card.imageUrl ?? undefined}
-                alt={card.name}
-                className="aspect-[59/86] w-full object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div className="flex aspect-[59/86] items-center justify-center p-1 text-center text-[9px] text-[var(--color-muted)]">
-                {card.mdm_card_name || card.name}
-              </div>
-            )}
-          </div>
-        ))}
+        {copies.map(({ card, slotOwned }, index) => {
+          const clickable = card.card_id != null
+          return (
+            <button
+              key={`${card.id}-${index}`}
+              type="button"
+              disabled={!clickable}
+              onClick={() => {
+                if (clickable) onCardClick(card)
+              }}
+              title={
+                clickable
+                  ? `${card.name}${slotOwned ? '' : ' (não possui)'} — clique para detalhe`
+                  : `${card.mdm_card_name || card.name} (sem match no catálogo)`
+              }
+              className={[
+                'relative overflow-hidden rounded-md border bg-[var(--color-surface-2)] text-left transition',
+                slotOwned
+                  ? 'border-[var(--color-accent)]/40'
+                  : 'border-[var(--color-border)] opacity-40',
+                clickable
+                  ? 'cursor-pointer hover:border-[var(--color-accent)] hover:ring-1 hover:ring-[var(--color-accent)]'
+                  : 'cursor-default',
+              ].join(' ')}
+            >
+              {card.imageUrlSmall || card.imageUrl ? (
+                <img
+                  src={card.imageUrlSmall ?? card.imageUrl ?? undefined}
+                  alt={card.name}
+                  className="aspect-[59/86] w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex aspect-[59/86] items-center justify-center p-1 text-center text-[9px] text-[var(--color-muted)]">
+                  {card.mdm_card_name || card.name}
+                </div>
+              )}
+            </button>
+          )
+        })}
       </div>
     </section>
   )
@@ -86,6 +109,8 @@ export function CommunityDeckDetailPage() {
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [previewCardId, setPreviewCardId] = useState<number | null>(null)
+  const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
 
   const load = useCallback(async () => {
     if (!syncedDeckId) return
@@ -261,10 +286,33 @@ export function CommunityDeckDetailPage() {
       )}
 
       <div className="space-y-4">
-        <ZoneSection title="Deck principal" zone="main" cards={deck.cards} />
-        <ZoneSection title="Extra Deck" zone="extra" cards={deck.cards} />
-        <ZoneSection title="Side Deck" zone="side" cards={deck.cards} />
+        {(
+          [
+            ['Deck principal', 'main'],
+            ['Extra Deck', 'extra'],
+            ['Side Deck', 'side'],
+          ] as const
+        ).map(([title, zone]) => (
+          <ZoneSection
+            key={zone}
+            title={title}
+            zone={zone}
+            cards={deck.cards}
+            onCardClick={(card) => {
+              if (card.card_id == null) return
+              setPreviewCardId(card.card_id)
+              setPreviewLanguage(card.language ?? deck.language ?? language)
+            }}
+          />
+        ))}
       </div>
+
+      <DeckCardPreviewModal
+        open={previewCardId != null}
+        cardId={previewCardId}
+        language={previewLanguage}
+        onClose={() => setPreviewCardId(null)}
+      />
     </div>
   )
 }
