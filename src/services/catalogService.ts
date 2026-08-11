@@ -26,6 +26,11 @@ function sanitizeSetCode(value: string): string | null {
   return cleaned
 }
 
+/** Remove curingas do ILIKE para evitar padrões acidentais */
+function sanitizeIlike(value: string): string {
+  return value.trim().replace(/[%_]/g, '')
+}
+
 function mapRow(row: Record<string, unknown>): Card {
   return {
     id: Number(row.id),
@@ -185,6 +190,24 @@ async function fetchByDescription(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
 }
 
+async function fetchByArchetype(
+  language: AppLanguage,
+  text: string,
+): Promise<Card[]> {
+  const safe = sanitizeIlike(text)
+  if (!safe) return []
+
+  const { data, error } = await supabase
+    .from('cards')
+    .select('*')
+    .eq('language', language)
+    .ilike('archetype', `%${safe}%`)
+    .limit(FETCH_LIMIT)
+
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+}
+
 async function fetchBrowsePage(
   language: AppLanguage,
   filters: CatalogFilters,
@@ -210,6 +233,11 @@ async function fetchBrowsePage(
     query = query.or('type.ilike.%Monster%,type.ilike.%Monstro%,type.ilike.%Token%')
   }
 
+  const archetype = sanitizeIlike(filters.archetype)
+  if (archetype) {
+    query = query.ilike('archetype', `%${archetype}%`)
+  }
+
   const { data, error } = await query
   if (error) throw new Error(error.message)
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
@@ -225,6 +253,7 @@ async function searchCardsInLanguage(
     fetchByNameExact(language, query),
     fetchByNamePartial(language, query),
     fetchByDescription(language, query),
+    fetchByArchetype(language, query),
   ]
 
   const safeSetCode = sanitizeSetCode(query)
@@ -524,6 +553,51 @@ export async function getDistinctSetNames(
   }
 
   return [...names].sort((a, b) => a.localeCompare(b, 'pt-BR')).slice(0, limit)
+}
+
+export async function getDistinctArchetypes(
+  language: AppLanguage,
+  search: string,
+  limit = 30,
+): Promise<string[]> {
+  const q = sanitizeIlike(normalizeQuery(search))
+
+  async function fetchLang(lang: AppLanguage) {
+    let query = supabase
+      .from('cards')
+      .select('archetype')
+      .eq('language', lang)
+      .not('archetype', 'is', null)
+      .neq('archetype', '')
+      .order('archetype', { ascending: true })
+      .limit(1500)
+
+    if (q) {
+      query = query.ilike('archetype', `%${q}%`)
+    }
+
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    return data ?? []
+  }
+
+  const rows =
+    language === 'pt'
+      ? [...(await fetchLang('pt')), ...(await fetchLang('en'))]
+      : await fetchLang('en')
+
+  const names = new Set<string>()
+  const needle = q.toLowerCase()
+
+  for (const row of rows) {
+    const value = String((row as { archetype: string | null }).archetype ?? '').trim()
+    if (!value) continue
+    if (!needle || value.toLowerCase().includes(needle)) {
+      names.add(value)
+    }
+  }
+
+  return [...names].sort((a, b) => a.localeCompare(b, 'en')).slice(0, limit)
 }
 
 export async function getDistinctRarities(language: AppLanguage): Promise<string[]> {

@@ -8,6 +8,7 @@ import type {
   CardRegion,
   CardSet,
   CatalogFilters,
+  CollectionItemWithCard,
   MonsterTypeFilter,
   SortOption,
 } from '@/types'
@@ -244,12 +245,15 @@ export function computeCardSearchRank(card: Card, query: string): number {
   const q = query.toLowerCase()
   const name = card.name.toLowerCase()
   const desc = (card.description ?? '').toLowerCase()
+  const archetype = (card.archetype ?? '').toLowerCase()
   const sets = parseCardSets(card.card_sets)
 
   if (sets.some((set) => set.set_code.toLowerCase() === q)) return 1
   if (sets.some((set) => set.set_code.toLowerCase().includes(q))) return 2
   if (name === q) return 3
+  if (archetype === q) return 3
   if (name.includes(q)) return 4
+  if (archetype.includes(q)) return 4
   if (desc.includes(q)) return 5
   return 99
 }
@@ -324,6 +328,13 @@ export function matchesCardFilters(card: Card, filters: CatalogFilters): boolean
     if (!ok) return false
   }
 
+  if (filters.archetype.trim()) {
+    const archetypeQ = filters.archetype.trim().toLowerCase()
+    if (!(card.archetype ?? '').toLowerCase().includes(archetypeQ)) {
+      return false
+    }
+  }
+
   return true
 }
 
@@ -370,6 +381,13 @@ export function matchesFilters(
       !impression.setName.toLowerCase().includes(setQ) &&
       !impression.setCode.toLowerCase().includes(setQ)
     ) {
+      return false
+    }
+  }
+
+  if (filters.archetype.trim()) {
+    const archetypeQ = filters.archetype.trim().toLowerCase()
+    if (!(impression.archetype ?? '').toLowerCase().includes(archetypeQ)) {
       return false
     }
   }
@@ -441,4 +459,35 @@ export function sortImpressions(
 
 export function looksLikeSetCode(query: string): boolean {
   return /^[A-Z0-9]{2,}[-_][A-Z0-9]+$/i.test(query.trim())
+}
+
+export function matchesCollectionSearch(
+  item: CollectionItemWithCard,
+  query: string,
+): boolean {
+  const q = normalizeQuery(query).toLowerCase()
+  if (!q) return true
+
+  const name = (item.card?.name ?? '').toLowerCase()
+  const desc = (item.card?.description ?? '').toLowerCase()
+  const archetype = (item.card?.archetype ?? '').toLowerCase()
+
+  return (
+    name.includes(q) ||
+    desc.includes(q) ||
+    archetype.includes(q) ||
+    item.set_code.toLowerCase().includes(q) ||
+    item.set_name.toLowerCase().includes(q) ||
+    item.set_rarity.toLowerCase().includes(q) ||
+    String(item.card_id).includes(q)
+  )
+}
+
+export function matchesCollectionArchetype(
+  item: CollectionItemWithCard,
+  archetype: string,
+): boolean {
+  const value = archetype.trim().toLowerCase()
+  if (!value) return true
+  return (item.card?.archetype ?? '').toLowerCase().includes(value)
 }

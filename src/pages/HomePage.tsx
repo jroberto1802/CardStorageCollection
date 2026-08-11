@@ -19,6 +19,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import { useDebounce } from '@/hooks/useDebounce'
 import { gridCardSizeClass, useGridCardSize } from '@/hooks/useGridCardSize'
 import {
+  getDistinctArchetypes,
   getDistinctRarities,
   getDistinctSetNames,
   searchCatalog,
@@ -52,6 +53,7 @@ function countActiveFilters(filters: CatalogFilters): number {
   count += filters.rarities.length
   if (filters.region) count += 1
   if (filters.setName.trim()) count += 1
+  if (filters.archetype.trim()) count += 1
   return count
 }
 
@@ -78,6 +80,9 @@ export function HomePage() {
   const [setSuggestions, setSetSuggestions] = useState<string[]>([])
   const [setSearch, setSetSearch] = useState('')
   const debouncedSetSearch = useDebounce(setSearch, 300)
+  const [archetypeSuggestions, setArchetypeSuggestions] = useState<string[]>([])
+  const [archetypeSearch, setArchetypeSearch] = useState('')
+  const debouncedArchetypeSearch = useDebounce(archetypeSearch, 300)
 
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [addPreset, setAddPreset] = useState<{
@@ -139,6 +144,24 @@ export function HomePage() {
       mounted = false
     }
   }, [language, debouncedSetSearch])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadArchetypes() {
+      try {
+        const names = await getDistinctArchetypes(language, debouncedArchetypeSearch)
+        if (mounted) setArchetypeSuggestions(names)
+      } catch {
+        if (mounted) setArchetypeSuggestions([])
+      }
+    }
+
+    void loadArchetypes()
+    return () => {
+      mounted = false
+    }
+  }, [language, debouncedArchetypeSearch])
 
   useEffect(() => {
     let mounted = true
@@ -298,9 +321,15 @@ export function HomePage() {
         filters={filters}
         rarities={rarities}
         setSuggestions={setSuggestions}
+        archetypeSuggestions={archetypeSuggestions}
         onChange={setFilters}
         onSetSearch={setSetSearch}
-        onClear={() => setFilters(DEFAULT_CATALOG_FILTERS)}
+        onArchetypeSearch={setArchetypeSearch}
+        onClear={() => {
+          setFilters(DEFAULT_CATALOG_FILTERS)
+          setSetSearch('')
+          setArchetypeSearch('')
+        }}
       />
 
       <div className="flex flex-wrap items-end justify-between gap-2">

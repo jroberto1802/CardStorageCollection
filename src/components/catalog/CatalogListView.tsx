@@ -59,6 +59,7 @@ export function CatalogListView({ items, onAddToCollection }: CatalogListViewPro
                   </p>
                   <p className="mt-0.5 truncate text-xs text-[var(--color-muted)]">
                     {[
+                      item.archetype,
                       item.type,
                       languageLabel(item.language) === 'Português' ? 'PT' : 'EN',
                       item.region !== 'Unknown' ? item.region : null,

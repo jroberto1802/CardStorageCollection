@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { BookOpen, Grid3X3, List, Plus, X } from 'lucide-react'
+import { BookOpen, Grid3X3, List, Plus, Search, X } from 'lucide-react'
 import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
 import { CollectionAlbumView } from '@/components/collection/CollectionAlbumView'
 import { CollectionGridView } from '@/components/collection/CollectionGridView'
@@ -16,6 +16,10 @@ import {
   listCollectionWithCards,
   removeFromCollection,
 } from '@/services/collectionService'
+import {
+  matchesCollectionArchetype,
+  matchesCollectionSearch,
+} from '@/utils/cardHelpers'
 import type {
   AlbumSlot,
   CollectionItemWithCard,
@@ -55,6 +59,13 @@ export function CollectionPage() {
   const setPickerRef = useRef<HTMLDivElement>(null)
   const [albumSlots, setAlbumSlots] = useState<AlbumSlot[]>([])
   const [albumLoading, setAlbumLoading] = useState(false)
+
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebounce(query, 300)
+  const [archetypeSearch, setArchetypeSearch] = useState('')
+  const [selectedArchetype, setSelectedArchetype] = useState('')
+  const [archetypePickerOpen, setArchetypePickerOpen] = useState(false)
+  const archetypePickerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const viewParam = searchParams.get('view')
@@ -183,20 +194,29 @@ export function CollectionPage() {
   }, [ownedSets, catalogSets, debouncedSetSearch])
 
   useEffect(() => {
-    if (!setPickerOpen) return
+    if (!setPickerOpen && !archetypePickerOpen) return
 
     function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node
       if (
+        setPickerOpen &&
         setPickerRef.current &&
-        !setPickerRef.current.contains(event.target as Node)
+        !setPickerRef.current.contains(target)
       ) {
         setSetPickerOpen(false)
+      }
+      if (
+        archetypePickerOpen &&
+        archetypePickerRef.current &&
+        !archetypePickerRef.current.contains(target)
+      ) {
+        setArchetypePickerOpen(false)
       }
     }
 
     document.addEventListener('mousedown', handlePointerDown)
     return () => document.removeEventListener('mousedown', handlePointerDown)
-  }, [setPickerOpen])
+  }, [setPickerOpen, archetypePickerOpen])
 
   function handleSelectSet(name: string) {
     setSelectedSetName(name)
@@ -213,6 +233,18 @@ export function CollectionPage() {
     setSearchParams({ view: 'album' })
   }
 
+  function handleSelectArchetype(name: string) {
+    setSelectedArchetype(name)
+    setArchetypeSearch(name)
+    setArchetypePickerOpen(false)
+  }
+
+  function handleClearArchetype() {
+    setSelectedArchetype('')
+    setArchetypeSearch('')
+    setArchetypePickerOpen(false)
+  }
+
   function handleChangeView(next: CollectionViewMode) {
     setView(next)
     if (next === 'album' && selectedSetName) {
@@ -224,9 +256,33 @@ export function CollectionPage() {
     }
   }
 
+  const archetypeOptions = useMemo(() => {
+    const q = archetypeSearch.trim().toLowerCase()
+    const names = new Set<string>()
+
+    for (const item of items) {
+      const archetype = item.card?.archetype?.trim()
+      if (!archetype) continue
+      if (!q || archetype.toLowerCase().includes(q)) {
+        names.add(archetype)
+      }
+    }
+
+    return [...names].sort((a, b) => a.localeCompare(b, 'en'))
+  }, [items, archetypeSearch])
+
+  const filteredItems = useMemo(() => {
+    const archetypeFilter = selectedArchetype || archetypeSearch
+    return items.filter(
+      (item) =>
+        matchesCollectionSearch(item, debouncedQuery) &&
+        matchesCollectionArchetype(item, archetypeFilter),
+    )
+  }, [items, debouncedQuery, selectedArchetype, archetypeSearch])
+
   const totalCards = useMemo(
-    () => items.reduce((sum, item) => sum + (item.quantity || 0), 0),
-    [items],
+    () => filteredItems.reduce((sum, item) => sum + (item.quantity || 0), 0),
+    [filteredItems],
   )
 
   async function handleRemove(id: string) {
@@ -286,6 +342,99 @@ export function CollectionPage() {
           </div>
         )}
       </div>
+
+      {view !== 'album' && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="relative min-w-0 flex-1">
+            <label className="mb-1.5 block text-xs text-[var(--color-muted)]">
+              Busca
+            </label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-[var(--color-muted)]" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar por nome, set code, texto ou arquétipo..."
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] py-2.5 pr-10 pl-10 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {query && (
+                <button
+                  type="button"
+                  title="Limpar busca"
+                  onClick={() => setQuery('')}
+                  className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-[var(--color-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="relative w-full sm:max-w-xs" ref={archetypePickerRef}>
+            <label className="mb-1.5 block text-xs text-[var(--color-muted)]">
+              Arquétipo
+            </label>
+            <div className="relative">
+              <input
+                value={archetypeSearch}
+                onChange={(e) => {
+                  setArchetypeSearch(e.target.value)
+                  setArchetypePickerOpen(true)
+                  if (selectedArchetype && e.target.value !== selectedArchetype) {
+                    setSelectedArchetype('')
+                  }
+                }}
+                onFocus={() => setArchetypePickerOpen(true)}
+                placeholder="Ex.: Blue-Eyes, Zoodiac..."
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] py-2.5 pr-10 pl-3 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {(archetypeSearch || selectedArchetype) && (
+                <button
+                  type="button"
+                  title="Limpar arquétipo"
+                  onClick={handleClearArchetype}
+                  className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-[var(--color-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {archetypePickerOpen && (
+              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl">
+                {archetypeOptions.length === 0 ? (
+                  <li className="px-3 py-3 text-sm text-[var(--color-muted)]">
+                    Nenhum arquétipo encontrado.
+                  </li>
+                ) : (
+                  archetypeOptions.map((name) => (
+                    <li key={name}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectArchetype(name)}
+                        className={[
+                          'flex w-full px-3 py-2.5 text-left text-sm transition hover:bg-[var(--color-surface-2)]',
+                          selectedArchetype === name
+                            ? 'bg-[var(--color-accent)]/15'
+                            : '',
+                        ].join(' ')}
+                      >
+                        <span className="font-medium text-[var(--color-text)]">
+                          {name}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       {view === 'album' && (
         <div className="flex flex-col gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:flex-row sm:items-end">
@@ -372,9 +521,15 @@ export function CollectionPage() {
           {totalCards === 1 ? 'carta' : 'cartas'}
           {' · '}
           <span className="font-semibold text-[var(--color-text)]">
-            {items.length.toLocaleString('pt-BR')}
+            {filteredItems.length.toLocaleString('pt-BR')}
           </span>{' '}
-          {items.length === 1 ? 'impressão' : 'impressões'}
+          {filteredItems.length === 1 ? 'impressão' : 'impressões'}
+          {(query || selectedArchetype || archetypeSearch) && items.length > 0 && (
+            <span>
+              {' '}
+              · {items.length.toLocaleString('pt-BR')} no total
+            </span>
+          )}
         </p>
       )}
 
@@ -388,19 +543,30 @@ export function CollectionPage() {
         <p className="text-sm text-[var(--color-muted)]">Carregando coleção...</p>
       )}
 
-      {!loading && view === 'list' && items.length === 0 && (
+      {!loading && view !== 'album' && items.length === 0 && (
         <EmptyCollection onAdd={() => setModalOpen(true)} />
       )}
-      {!loading && view === 'grid' && items.length === 0 && (
-        <EmptyCollection onAdd={() => setModalOpen(true)} />
-      )}
+      {!loading &&
+        view !== 'album' &&
+        items.length > 0 &&
+        filteredItems.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-16 text-center">
+            <p className="text-lg font-medium">Nenhuma carta encontrada.</p>
+            <p className="mt-2 text-sm text-[var(--color-muted)]">
+              Tente alterar a busca ou o filtro de arquétipo.
+            </p>
+          </div>
+        )}
 
-      {!loading && view === 'list' && items.length > 0 && (
-        <CollectionListView items={items} onRemove={(id) => void handleRemove(id)} />
+      {!loading && view === 'list' && filteredItems.length > 0 && (
+        <CollectionListView
+          items={filteredItems}
+          onRemove={(id) => void handleRemove(id)}
+        />
       )}
-      {!loading && view === 'grid' && items.length > 0 && (
+      {!loading && view === 'grid' && filteredItems.length > 0 && (
         <CollectionGridView
-          items={items}
+          items={filteredItems}
           size={gridSize}
           onRemove={(id) => void handleRemove(id)}
         />

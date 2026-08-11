@@ -117,6 +117,7 @@ export interface CatalogFilters {
   rarities: string[]
   region: 'TCG' | 'OCG' | null
   setName: string
+  archetype: string
 }
 
 export interface CardImpression {
@@ -157,6 +158,7 @@ export const DEFAULT_CATALOG_FILTERS: CatalogFilters = {
   rarities: [],
   region: null,
   setName: '',
+  archetype: '',
 }
 
 export const KNOWN_RARITIES = [

@@ -13,8 +13,10 @@ interface FilterPanelProps {
   filters: CatalogFilters
   rarities: string[]
   setSuggestions: string[]
+  archetypeSuggestions: string[]
   onChange: (filters: CatalogFilters) => void
   onSetSearch: (value: string) => void
+  onArchetypeSearch: (value: string) => void
   onClear: () => void
 }
 
@@ -27,33 +29,51 @@ export function FilterPanel({
   filters,
   rarities,
   setSuggestions,
+  archetypeSuggestions,
   onChange,
   onSetSearch,
+  onArchetypeSearch,
   onClear,
 }: FilterPanelProps) {
   const [setSearch, setSetSearch] = useState(filters.setName)
   const [setPickerOpen, setSetPickerOpen] = useState(false)
   const setPickerRef = useRef<HTMLDivElement>(null)
+  const [archetypeSearch, setArchetypeSearch] = useState(filters.archetype)
+  const [archetypePickerOpen, setArchetypePickerOpen] = useState(false)
+  const archetypePickerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setSetSearch(filters.setName)
   }, [filters.setName])
 
   useEffect(() => {
-    if (!setPickerOpen) return
+    setArchetypeSearch(filters.archetype)
+  }, [filters.archetype])
+
+  useEffect(() => {
+    if (!setPickerOpen && !archetypePickerOpen) return
 
     function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node
       if (
+        setPickerOpen &&
         setPickerRef.current &&
-        !setPickerRef.current.contains(event.target as Node)
+        !setPickerRef.current.contains(target)
       ) {
         setSetPickerOpen(false)
+      }
+      if (
+        archetypePickerOpen &&
+        archetypePickerRef.current &&
+        !archetypePickerRef.current.contains(target)
+      ) {
+        setArchetypePickerOpen(false)
       }
     }
 
     document.addEventListener('mousedown', handlePointerDown)
     return () => document.removeEventListener('mousedown', handlePointerDown)
-  }, [setPickerOpen])
+  }, [setPickerOpen, archetypePickerOpen])
 
   if (!open) return null
 
@@ -73,6 +93,20 @@ export function FilterPanel({
     onSetSearch('')
     onChange({ ...filters, setName: '' })
     setSetPickerOpen(false)
+  }
+
+  function handleSelectArchetype(name: string) {
+    setArchetypeSearch(name)
+    onArchetypeSearch(name)
+    onChange({ ...filters, archetype: name })
+    setArchetypePickerOpen(false)
+  }
+
+  function handleClearArchetype() {
+    setArchetypeSearch('')
+    onArchetypeSearch('')
+    onChange({ ...filters, archetype: '' })
+    setArchetypePickerOpen(false)
   }
 
   return (
@@ -204,6 +238,68 @@ export function FilterPanel({
                 {region}
               </button>
             ))}
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend className="mb-2 text-sm text-[var(--color-muted)]">Arquétipo</legend>
+          <div className="relative" ref={archetypePickerRef}>
+            <div className="relative">
+              <input
+                type="text"
+                value={archetypeSearch}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setArchetypeSearch(value)
+                  onArchetypeSearch(value)
+                  setArchetypePickerOpen(true)
+                  onChange({ ...filters, archetype: value })
+                }}
+                onFocus={() => setArchetypePickerOpen(true)}
+                placeholder="Ex.: Blue-Eyes, Zoodiac..."
+                autoComplete="off"
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] py-2 pr-10 pl-3 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
+              />
+              {(archetypeSearch || filters.archetype) && (
+                <button
+                  type="button"
+                  title="Limpar"
+                  onClick={handleClearArchetype}
+                  className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-[var(--color-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {archetypePickerOpen && (
+              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl">
+                {archetypeSuggestions.length === 0 ? (
+                  <li className="px-3 py-3 text-sm text-[var(--color-muted)]">
+                    Nenhum arquétipo encontrado.
+                  </li>
+                ) : (
+                  archetypeSuggestions.map((name) => (
+                    <li key={name}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectArchetype(name)}
+                        className={[
+                          'flex w-full px-3 py-2.5 text-left text-sm transition hover:bg-[var(--color-surface-2)]',
+                          filters.archetype === name
+                            ? 'bg-[var(--color-accent)]/15'
+                            : '',
+                        ].join(' ')}
+                      >
+                        <span className="font-medium text-[var(--color-text)]">
+                          {name}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
           </div>
         </fieldset>
 

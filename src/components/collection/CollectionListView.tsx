@@ -57,6 +57,7 @@ export function CollectionListView({ items, onRemove }: CollectionListViewProps)
                   </p>
                   <p className="truncate text-xs text-[var(--color-muted)]">
                     {[
+                      item.card?.archetype,
                       item.set_rarity,
                       item.set_name,
                       languageLabel(displayLang),

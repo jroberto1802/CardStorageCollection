@@ -9,7 +9,7 @@ interface SearchBarProps {
 export function SearchBar({
   value,
   onChange,
-  placeholder = 'Buscar por nome, set code (ex.: LOB-001) ou texto da carta...',
+  placeholder = 'Buscar por nome, arquétipo, set code (ex.: LOB-001) ou texto da carta...',
 }: SearchBarProps) {
   return (
     <div className="relative">

@@ -16,6 +16,7 @@ import { FilterPanel } from '@/components/catalog/FilterPanel'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
+  getDistinctArchetypes,
   getDistinctRarities,
   getDistinctSetNames,
   searchCatalog,
@@ -71,6 +72,9 @@ export function DeckBuilderPage() {
   const [setSuggestions, setSetSuggestions] = useState<string[]>([])
   const [setSearch, setSetSearch] = useState('')
   const debouncedSetSearch = useDebounce(setSearch, 300)
+  const [archetypeSuggestions, setArchetypeSuggestions] = useState<string[]>([])
+  const [archetypeSearch, setArchetypeSearch] = useState('')
+  const debouncedArchetypeSearch = useDebounce(archetypeSearch, 300)
   const [ownedByCard, setOwnedByCard] = useState<Map<number, number>>(new Map())
   const [previewCardId, setPreviewCardId] = useState<number | null>(null)
   const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
@@ -166,6 +170,22 @@ export function DeckBuilderPage() {
       mounted = false
     }
   }, [language, debouncedSetSearch])
+
+  useEffect(() => {
+    let mounted = true
+    async function loadArchetypes() {
+      try {
+        const names = await getDistinctArchetypes(language, debouncedArchetypeSearch)
+        if (mounted) setArchetypeSuggestions(names)
+      } catch {
+        if (mounted) setArchetypeSuggestions([])
+      }
+    }
+    void loadArchetypes()
+    return () => {
+      mounted = false
+    }
+  }, [language, debouncedArchetypeSearch])
 
   useEffect(() => {
     let mounted = true
@@ -462,6 +482,8 @@ export function DeckBuilderPage() {
               onClick={() => {
                 setQuery('')
                 setFilters(DEFAULT_CATALOG_FILTERS)
+                setSetSearch('')
+                setArchetypeSearch('')
                 setSort('name_asc')
               }}
               className="rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-danger)]"
@@ -475,9 +497,15 @@ export function DeckBuilderPage() {
             filters={filters}
             rarities={rarities}
             setSuggestions={setSuggestions}
+            archetypeSuggestions={archetypeSuggestions}
             onChange={setFilters}
             onSetSearch={setSetSearch}
-            onClear={() => setFilters(DEFAULT_CATALOG_FILTERS)}
+            onArchetypeSearch={setArchetypeSearch}
+            onClear={() => {
+              setFilters(DEFAULT_CATALOG_FILTERS)
+              setSetSearch('')
+              setArchetypeSearch('')
+            }}
           />
 
           {searching ? (
