@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
 import type { CollectionItemWithCard, GridCardSize } from '@/types'
 import { gridCardSizeClass } from '@/hooks/useGridCardSize'
-import { getPrimaryImage } from '@/utils/cardHelpers'
+import { getPrimaryImage, buildCardDetailPath } from '@/utils/cardHelpers'
 
 interface CollectionGridViewProps {
   items: CollectionItemWithCard[]
@@ -28,7 +28,12 @@ export function CollectionGridView({
             className="group relative flex flex-col overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] transition hover:border-[var(--color-accent)]"
           >
             <Link
-              to={`/cards/${item.card_id}?set=${encodeURIComponent(item.set_code)}&lang=${displayLang}`}
+              to={buildCardDetailPath(item.card_id, {
+                lang: displayLang,
+                setCode: item.set_code,
+                setRarity: item.set_rarity,
+                setName: item.set_name,
+              })}
               className="flex flex-1 flex-col"
             >
               <div className="relative aspect-[59/86] overflow-hidden bg-[var(--color-surface-2)]">

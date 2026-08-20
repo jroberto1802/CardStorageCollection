@@ -491,3 +491,263 @@ export function matchesCollectionArchetype(
   if (!value) return true
   return (item.card?.archetype ?? '').toLowerCase().includes(value)
 }
+
+export interface CardDetailLinkParams {
+  lang?: AppLanguage | string
+  setCode?: string | null
+  setRarity?: string | null
+  setName?: string | null
+}
+
+/** Monta URL de detalhe preservando impressão (set + raridade). */
+export function buildCardDetailPath(
+  cardId: number,
+  params: CardDetailLinkParams = {},
+): string {
+  const search = new URLSearchParams()
+  if (params.lang) search.set('lang', params.lang)
+  if (params.setCode && params.setCode !== '—') {
+    search.set('set', params.setCode)
+  }
+  if (params.setRarity && params.setRarity !== '—') {
+    search.set('rarity', params.setRarity)
+  }
+  if (params.setName && params.setName !== 'Sem set') {
+    search.set('setName', params.setName)
+  }
+  const qs = search.toString()
+  return qs ? `/cards/${cardId}?${qs}` : `/cards/${cardId}`
+}
+
+function normalizeSetKey(value: string | null | undefined): string {
+  return (value ?? '').trim().toLowerCase()
+}
+
+/**
+ * Resolve a impressão correta quando o mesmo set_code existe em raridades diferentes.
+ * Prioridade: set+rarity+name → set+rarity → set+name → set → primeira.
+ */
+export function resolveCardSet(
+  sets: CardSet[],
+  options: {
+    setCode?: string | null
+    setRarity?: string | null
+    setName?: string | null
+  },
+): CardSet | null {
+  if (!sets.length) return null
+
+  const code = normalizeSetKey(options.setCode)
+  const rarity = normalizeSetKey(options.setRarity)
+  const name = normalizeSetKey(options.setName)
+
+  if (!code) return sets[0]
+
+  const byCode = sets.filter(
+    (set) => normalizeSetKey(set.set_code) === code,
+  )
+  if (!byCode.length) return sets[0]
+
+  if (rarity && name) {
+    const exact = byCode.find(
+      (set) =>
+        normalizeSetKey(set.set_rarity) === rarity &&
+        normalizeSetKey(set.set_name) === name,
+    )
+    if (exact) return exact
+  }
+
+  if (rarity) {
+    const byRarity = byCode.find(
+      (set) => normalizeSetKey(set.set_rarity) === rarity,
+    )
+    if (byRarity) return byRarity
+  }
+
+  if (name) {
+    const byName = byCode.find(
+      (set) => normalizeSetKey(set.set_name) === name,
+    )
+    if (byName) return byName
+  }
+
+  return byCode[0]
+}
+
+/** Converte set_price (string USD da API) em número. */
+export function parseSetPriceUsd(setPrice?: string | null): number | null {
+  if (setPrice == null) return null
+  const cleaned = String(setPrice)
+    .trim()
+    .replace(/[^0-9.,-]/g, '')
+    .replace(',', '.')
+  if (!cleaned) return null
+  const value = Number.parseFloat(cleaned)
+  if (!Number.isFinite(value) || value < 0) return null
+  return value
+}
+
+export function formatUsd(value: number): string {
+  return value.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  })
+}
+
+export function formatBrl(value: number): string {
+  return value.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  })
+}
+
+export function convertUsdToBrl(usd: number, rate: number): number {
+  return usd * rate
+}
+
+/** Preço USD unitário da impressão na coleção (via card_sets). */
+export function resolveCollectionItemPriceUsd(
+  item: CollectionItemWithCard,
+): number | null {
+  if (!item.card) return null
+  const match = resolveCardSet(parseCardSets(item.card.card_sets), {
+    setCode: item.set_code,
+    setRarity: item.set_rarity,
+    setName: item.set_name,
+  })
+  return parseSetPriceUsd(match?.set_price)
+}
+
+export interface CollectionStats {
+  totalCards: number
+  impressions: number
+  uniqueCardIds: number
+  uniqueSets: number
+  extraCopies: number
+  pricedImpressions: number
+  valueUsd: number
+  topItem: CollectionRankedItem | null
+  premiumCount: number
+}
+
+export interface CollectionRankedItem {
+  id: string
+  cardId: number
+  language: AppLanguage
+  name: string
+  setCode: string
+  setName: string
+  setRarity: string
+  quantity: number
+  extraCopies: number
+  unitUsd: number | null
+  totalUsd: number | null
+  imageUrlSmall: string | null
+}
+
+const PREMIUM_RARITY_HINTS = [
+  'secret',
+  'ultimate',
+  'ghost',
+  'starlight',
+  'collector',
+  'quarter century',
+  'prismatic',
+  'ultra',
+  'mosaic',
+]
+
+function isPremiumRarity(rarity: string): boolean {
+  const r = rarity.toLowerCase()
+  return PREMIUM_RARITY_HINTS.some((hint) => r.includes(hint))
+}
+
+function toRankedItem(item: CollectionItemWithCard): CollectionRankedItem {
+  const qty = item.quantity || 0
+  const unitUsd = resolveCollectionItemPriceUsd(item)
+  const images = item.card ? getPrimaryImage(item.card) : { small: null, full: null }
+  return {
+    id: item.id,
+    cardId: item.card_id,
+    language: item.card?.language ?? item.language,
+    name: item.card?.name ?? `Carta #${item.card_id}`,
+    setCode: item.set_code,
+    setName: item.set_name,
+    setRarity: item.set_rarity || '',
+    quantity: qty,
+    extraCopies: Math.max(0, qty - 1),
+    unitUsd,
+    totalUsd: unitUsd != null ? unitUsd * qty : null,
+    imageUrlSmall: images.small,
+  }
+}
+
+export function listMostValuableItems(
+  items: CollectionItemWithCard[],
+  limit = 30,
+): CollectionRankedItem[] {
+  return items
+    .map(toRankedItem)
+    .filter((row) => row.totalUsd != null && row.totalUsd > 0)
+    .sort((a, b) => (b.totalUsd ?? 0) - (a.totalUsd ?? 0))
+    .slice(0, limit)
+}
+
+export function listExtraCopyItems(
+  items: CollectionItemWithCard[],
+): CollectionRankedItem[] {
+  return items
+    .map(toRankedItem)
+    .filter((row) => row.extraCopies > 0)
+    .sort((a, b) => {
+      const valueDiff = (b.totalUsd ?? 0) - (a.totalUsd ?? 0)
+      if (valueDiff !== 0) return valueDiff
+      return b.extraCopies - a.extraCopies
+    })
+}
+
+export function computeCollectionStats(
+  items: CollectionItemWithCard[],
+): CollectionStats {
+  let totalCards = 0
+  let extraCopies = 0
+  let valueUsd = 0
+  let pricedImpressions = 0
+  let premiumCount = 0
+  const cardIds = new Set<number>()
+  const setNames = new Set<string>()
+
+  let topItem: CollectionRankedItem | null = null
+
+  for (const item of items) {
+    const ranked = toRankedItem(item)
+    totalCards += ranked.quantity
+    extraCopies += ranked.extraCopies
+    cardIds.add(item.card_id)
+    if (item.set_name) setNames.add(item.set_name)
+    if (isPremiumRarity(item.set_rarity || '')) {
+      premiumCount += ranked.quantity
+    }
+
+    if (ranked.unitUsd == null || ranked.totalUsd == null) continue
+
+    pricedImpressions += 1
+    valueUsd += ranked.totalUsd
+
+    if (!topItem || ranked.totalUsd > (topItem.totalUsd ?? 0)) {
+      topItem = ranked
+    }
+  }
+
+  return {
+    totalCards,
+    impressions: items.length,
+    uniqueCardIds: cardIds.size,
+    uniqueSets: setNames.size,
+    extraCopies,
+    pricedImpressions,
+    valueUsd,
+    topItem,
+    premiumCount,
+  }
+}

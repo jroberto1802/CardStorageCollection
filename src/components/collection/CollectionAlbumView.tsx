@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import type { AlbumSlot } from '@/types'
+import { buildCardDetailPath } from '@/utils/cardHelpers'
 
 interface CollectionAlbumViewProps {
   slots: AlbumSlot[]
@@ -74,8 +75,13 @@ export function CollectionAlbumView({
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
         {slots.map((slot) => (
           <Link
-            key={`${slot.cardId}-${slot.setCode}`}
-            to={`/cards/${slot.cardId}?set=${encodeURIComponent(slot.setCode)}&lang=${slot.language}`}
+            key={`${slot.cardId}-${slot.setCode}-${slot.setRarity}`}
+            to={buildCardDetailPath(slot.cardId, {
+              lang: slot.language,
+              setCode: slot.setCode,
+              setRarity: slot.setRarity,
+              setName: slot.setName,
+            })}
             title={
               slot.ownedSetCode
                 ? `${slot.setCode} — ${slot.name} (você possui ${slot.ownedSetCode})`

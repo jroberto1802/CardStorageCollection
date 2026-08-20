@@ -5,11 +5,13 @@ import { AddToCollectionModal } from '@/components/collection/AddToCollectionMod
 import { CollectionAlbumView } from '@/components/collection/CollectionAlbumView'
 import { CollectionGridView } from '@/components/collection/CollectionGridView'
 import { CollectionListView } from '@/components/collection/CollectionListView'
+import { CollectionStatsCards } from '@/components/collection/CollectionStatsCards'
 import { GridSizeControl } from '@/components/common/GridSizeControl'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useGridCardSize } from '@/hooks/useGridCardSize'
 import { getDistinctSetNames } from '@/services/catalogService'
+import { getUsdBrlRate } from '@/services/currencyService'
 import {
   buildAlbumSlots,
   getOwnedSetOptions,
@@ -17,6 +19,7 @@ import {
   removeFromCollection,
 } from '@/services/collectionService'
 import {
+  computeCollectionStats,
   matchesCollectionArchetype,
   matchesCollectionSearch,
 } from '@/utils/cardHelpers'
@@ -66,6 +69,17 @@ export function CollectionPage() {
   const [selectedArchetype, setSelectedArchetype] = useState('')
   const [archetypePickerOpen, setArchetypePickerOpen] = useState(false)
   const archetypePickerRef = useRef<HTMLDivElement>(null)
+  const [usdBrlRate, setUsdBrlRate] = useState<number | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    void getUsdBrlRate().then((rate) => {
+      if (mounted) setUsdBrlRate(rate)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   useEffect(() => {
     const viewParam = searchParams.get('view')
@@ -285,6 +299,8 @@ export function CollectionPage() {
     [filteredItems],
   )
 
+  const collectionStats = useMemo(() => computeCollectionStats(items), [items])
+
   async function handleRemove(id: string) {
     if (!window.confirm('Remover esta carta da coleção?')) return
     try {
@@ -314,6 +330,13 @@ export function CollectionPage() {
           Adicionar carta
         </button>
       </div>
+
+      <CollectionStatsCards
+        stats={collectionStats}
+        items={items}
+        usdBrlRate={usdBrlRate}
+        loading={loading}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         {VIEW_OPTIONS.map((option) => {

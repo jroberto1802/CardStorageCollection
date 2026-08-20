@@ -1,17 +1,18 @@
 import { Link } from 'react-router-dom'
 import type { CardImpression } from '@/types'
-import { languageLabel } from '@/utils/cardHelpers'
+import { buildCardDetailPath, languageLabel } from '@/utils/cardHelpers'
 
 interface CatalogCardProps {
   impression: CardImpression
 }
 
 export function CatalogCard({ impression }: CatalogCardProps) {
-  const params = new URLSearchParams({ lang: impression.language })
-  if (impression.setCode && impression.setCode !== '—') {
-    params.set('set', impression.setCode)
-  }
-  const detailUrl = `/cards/${impression.cardId}?${params.toString()}`
+  const detailUrl = buildCardDetailPath(impression.cardId, {
+    lang: impression.language,
+    setCode: impression.setCode,
+    setRarity: impression.setRarity,
+    setName: impression.setName,
+  })
 
   return (
     <Link

@@ -18,6 +18,7 @@ import {
 import {
   addToCollection,
   listCollectionItemsByCardId,
+  updateCollectionImpression,
   updateCollectionQuantity,
 } from '@/services/collectionService'
 import {
@@ -25,13 +26,20 @@ import {
   isYgoHostedUrl,
 } from '@/services/imageSyncService'
 import type { AppLanguage, Card, CardImage, CardSet, CollectionItem } from '@/types'
+import { getUsdBrlRate } from '@/services/currencyService'
 import {
+  buildCardDetailPath,
+  convertUsdToBrl,
   detectRegion,
+  formatBrl,
+  formatUsd,
   getCardCategory,
   getPrimaryImage,
   languageLabel,
   parseBanlistInfo,
   parseCardSets,
+  parseSetPriceUsd,
+  resolveCardSet,
 } from '@/utils/cardHelpers'
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
@@ -52,6 +60,8 @@ export function CardDetailPage() {
 
   const language = (searchParams.get('lang') as AppLanguage | null) ?? settingsLanguage
   const selectedSetCode = searchParams.get('set') ?? ''
+  const selectedRarity = searchParams.get('rarity') ?? ''
+  const selectedSetName = searchParams.get('setName') ?? ''
 
   const [card, setCard] = useState<Card | null>(null)
   const [loading, setLoading] = useState(true)
@@ -62,6 +72,7 @@ export function CardDetailPage() {
   const [collectionBusyId, setCollectionBusyId] = useState<string | null>(null)
   const [collectionMessage, setCollectionMessage] = useState<string | null>(null)
   const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
+  const [usdBrlRate, setUsdBrlRate] = useState<number | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -145,13 +156,91 @@ export function CardDetailPage() {
   }
 
   const sets = useMemo(() => (card ? parseCardSets(card.card_sets) : []), [card])
-  const selectedSet: CardSet | null = useMemo(() => {
-    if (!sets.length) return null
-    return (
-      sets.find((set) => set.set_code.toLowerCase() === selectedSetCode.toLowerCase()) ??
-      sets[0]
+  const selectedSet: CardSet | null = useMemo(
+    () =>
+      resolveCardSet(sets, {
+        setCode: selectedSetCode,
+        setRarity: selectedRarity,
+        setName: selectedSetName,
+      }),
+    [sets, selectedSetCode, selectedRarity, selectedSetName],
+  )
+
+  // Completa set/rarity na URL quando a impressão resolvida ainda não está pinada
+  useEffect(() => {
+    if (!card || !selectedSet) return
+
+    const next = new URLSearchParams(searchParams)
+    let changed = false
+
+    if (!selectedSetCode) {
+      next.set('set', selectedSet.set_code)
+      changed = true
+    }
+
+    if (
+      selectedSet.set_rarity &&
+      selectedRarity.toLowerCase() !== selectedSet.set_rarity.toLowerCase()
+    ) {
+      next.set('rarity', selectedSet.set_rarity)
+      changed = true
+    }
+
+    const sameCodeRarity = sets.filter(
+      (s) =>
+        s.set_code.toLowerCase() === selectedSet.set_code.toLowerCase() &&
+        (s.set_rarity || '').toLowerCase() ===
+          (selectedSet.set_rarity || '').toLowerCase(),
     )
-  }, [sets, selectedSetCode])
+    if (
+      sameCodeRarity.length > 1 &&
+      selectedSet.set_name &&
+      selectedSetName.toLowerCase() !== selectedSet.set_name.toLowerCase()
+    ) {
+      next.set('setName', selectedSet.set_name)
+      changed = true
+    }
+
+    if (!changed) return
+    if (card.language) next.set('lang', card.language)
+    navigate(`/cards/${card.id}?${next.toString()}`, { replace: true })
+  }, [
+    card,
+    selectedSet,
+    selectedSetCode,
+    selectedRarity,
+    selectedSetName,
+    sets,
+    searchParams,
+    navigate,
+  ])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadRate() {
+      try {
+        const rate = await getUsdBrlRate()
+        if (mounted) setUsdBrlRate(rate)
+      } catch {
+        if (mounted) setUsdBrlRate(null)
+      }
+    }
+
+    void loadRate()
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const selectedPriceUsd = useMemo(
+    () => parseSetPriceUsd(selectedSet?.set_price),
+    [selectedSet],
+  )
+  const selectedPriceBrl =
+    selectedPriceUsd != null && usdBrlRate != null
+      ? convertUsdToBrl(selectedPriceUsd, usdBrlRate)
+      : null
 
   useEffect(() => {
     let mounted = true
@@ -284,6 +373,96 @@ export function CardDetailPage() {
     }
   }
 
+  function setKey(set: CardSet): string {
+    return `${set.set_code}||${set.set_rarity || ''}||${set.set_name}`
+  }
+
+  function impressionOptionsForItem(item: CollectionItem): CardSet[] {
+    const sameCode = sets.filter(
+      (set) => set.set_code.toLowerCase() === item.set_code.toLowerCase(),
+    )
+    if (sameCode.length > 1) return sameCode
+    return sets
+  }
+
+  async function handleChangeOwnedImpression(
+    item: CollectionItem,
+    nextKey: string,
+  ) {
+    const [setCode, setRarity = '', setName = ''] = nextKey.split('||')
+    if (!setCode) return
+    if (
+      item.set_code.toLowerCase() === setCode.toLowerCase() &&
+      (item.set_rarity || '') === setRarity &&
+      (item.set_name || '') === setName
+    ) {
+      return
+    }
+
+    setCollectionBusyId(item.id)
+    setCollectionMessage(null)
+    try {
+      const updated = await updateCollectionImpression(item.id, {
+        set_code: setCode,
+        set_rarity: setRarity,
+        set_name: setName,
+      })
+
+      setOwnedItems((prev) => {
+        const without = prev.filter(
+          (row) => row.id !== item.id && row.id !== updated.id,
+        )
+        return [...without, updated].sort((a, b) =>
+          a.set_code.localeCompare(b.set_code, 'en'),
+        )
+      })
+
+      setCollectionMessage(
+        `Impressão corrigida: ${updated.set_code}${
+          updated.set_rarity ? ` · ${updated.set_rarity}` : ''
+        }.`,
+      )
+
+      navigate(
+        buildCardDetailPath(card!.id, {
+          lang: card!.language,
+          setCode: updated.set_code,
+          setRarity: updated.set_rarity,
+          setName: updated.set_name,
+        }),
+        { replace: true },
+      )
+    } catch (err) {
+      setCollectionMessage(
+        err instanceof Error ? err.message : 'Falha ao trocar raridade',
+      )
+    } finally {
+      setCollectionBusyId(null)
+    }
+  }
+
+  function handleSelectRarityView(nextKey: string) {
+    const [setCode, setRarity = '', setName = ''] = nextKey.split('||')
+    if (!card || !setCode) return
+    navigate(
+      buildCardDetailPath(card.id, {
+        lang: card.language,
+        setCode,
+        setRarity,
+        setName,
+      }),
+    )
+  }
+
+  const rarityChoicesForSelected = useMemo(() => {
+    if (!selectedSet) return []
+    const sameCode = sets.filter(
+      (set) =>
+        set.set_code.toLowerCase() === selectedSet.set_code.toLowerCase(),
+    )
+    return sameCode.length > 1 ? sameCode : []
+  }, [sets, selectedSet])
+
   if (loading) {
     return (
       <div className="text-sm text-[var(--color-muted)]">Carregando detalhes da carta...</div>
@@ -352,6 +531,9 @@ export function CardDetailPage() {
               <>
                 {ownedItems.map((item) => {
                   const busy = collectionBusyId === item.id
+                  const options = impressionOptionsForItem(item)
+                  const currentKey = `${item.set_code}||${item.set_rarity || ''}||${item.set_name}`
+                  const canFixRarity = options.length > 1
                   return (
                     <div
                       key={item.id}
@@ -373,6 +555,37 @@ export function CardDetailPage() {
                         <Check className="h-4 w-4" />
                         Na coleção
                       </p>
+
+                      {canFixRarity ? (
+                        <div className="mt-3">
+                          <label className="mb-1 block text-[11px] text-[var(--color-muted)]">
+                            Trocar raridade / impressão
+                          </label>
+                          <select
+                            value={
+                              options.some((set) => setKey(set) === currentKey)
+                                ? currentKey
+                                : setKey(options[0])
+                            }
+                            disabled={Boolean(collectionBusyId)}
+                            onChange={(e) =>
+                              void handleChangeOwnedImpression(
+                                item,
+                                e.target.value,
+                              )
+                            }
+                            className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-2 text-xs outline-none ring-[var(--color-accent)] focus:ring-2 disabled:opacity-50"
+                          >
+                            {options.map((set) => (
+                              <option key={setKey(set)} value={setKey(set)}>
+                                {set.set_rarity || '—'} · {set.set_code}
+                                {set.set_name ? ` · ${set.set_name}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : null}
+
                       <div className="mt-3 flex items-center justify-center gap-2">
                         <button
                           type="button"
@@ -485,7 +698,60 @@ export function CardDetailPage() {
                 }
               />
               <DetailRow label="Edição" value={selectedSet?.set_name ?? '—'} />
-              <DetailRow label="Raridade" value={selectedSet?.set_rarity ?? '—'} />
+              <DetailRow
+                label="Raridade"
+                value={
+                  rarityChoicesForSelected.length > 1 && selectedSet ? (
+                    <div className="space-y-1">
+                      <select
+                        value={setKey(selectedSet)}
+                        onChange={(e) => handleSelectRarityView(e.target.value)}
+                        className="w-full max-w-md rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2.5 py-1.5 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
+                      >
+                        {rarityChoicesForSelected.map((set) => (
+                          <option key={setKey(set)} value={setKey(set)}>
+                            {set.set_rarity || '—'}
+                            {set.set_price
+                              ? ` · ${parseSetPriceUsd(set.set_price) != null ? formatUsd(parseSetPriceUsd(set.set_price)!) : set.set_price}`
+                              : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] font-normal text-[var(--color-muted)]">
+                        Mesmo set code com raridades diferentes — escolha a correta.
+                      </p>
+                    </div>
+                  ) : (
+                    (selectedSet?.set_rarity ?? '—')
+                  )
+                }
+              />
+              <DetailRow
+                label="Preço"
+                value={
+                  selectedPriceUsd != null ? (
+                    <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-base font-semibold text-[var(--color-accent)]">
+                        {selectedPriceBrl != null
+                          ? formatBrl(selectedPriceBrl)
+                          : 'Calculando…'}
+                      </span>
+                      <span className="text-xs font-normal text-[var(--color-muted)]">
+                        ({formatUsd(selectedPriceUsd)}
+                        {usdBrlRate != null
+                          ? ` · cotação ${usdBrlRate.toLocaleString('pt-BR', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 4,
+                            })}`
+                          : ''}
+                        )
+                      </span>
+                    </span>
+                  ) : (
+                    'Indisponível'
+                  )
+                }
+              />
               <DetailRow
                 label="Idioma"
                 value={
@@ -531,6 +797,11 @@ export function CardDetailPage() {
                       selectedSet?.set_rarity === set.set_rarity &&
                       selectedSet?.set_name === set.set_name
                     const albumUrl = `/collection?view=album&set=${encodeURIComponent(set.set_name)}`
+                    const versionPriceUsd = parseSetPriceUsd(set.set_price)
+                    const versionPriceBrl =
+                      versionPriceUsd != null && usdBrlRate != null
+                        ? convertUsdToBrl(versionPriceUsd, usdBrlRate)
+                        : null
                     return (
                       <div
                         key={`${set.set_code}-${set.set_rarity}-${set.set_name}`}
@@ -542,7 +813,12 @@ export function CardDetailPage() {
                         ].join(' ')}
                       >
                         <Link
-                          to={`/cards/${card.id}?set=${encodeURIComponent(set.set_code)}&lang=${card.language}`}
+                          to={buildCardDetailPath(card.id, {
+                            lang: card.language,
+                            setCode: set.set_code,
+                            setRarity: set.set_rarity,
+                            setName: set.set_name,
+                          })}
                           className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"
                         >
                           <span className="font-mono text-xs font-semibold text-[var(--color-accent)]">
@@ -553,6 +829,13 @@ export function CardDetailPage() {
                           </span>
                           <span className="shrink-0 text-xs opacity-80">
                             {set.set_rarity || '—'}
+                          </span>
+                          <span className="w-full shrink-0 text-right text-[11px] tabular-nums opacity-90 sm:w-auto">
+                            {versionPriceBrl != null
+                              ? formatBrl(versionPriceBrl)
+                              : versionPriceUsd != null
+                                ? formatUsd(versionPriceUsd)
+                                : '—'}
                           </span>
                         </Link>
                         <Link

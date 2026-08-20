@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { BookmarkPlus } from 'lucide-react'
 import type { CardImpression } from '@/types'
-import { languageLabel } from '@/utils/cardHelpers'
+import { buildCardDetailPath, languageLabel } from '@/utils/cardHelpers'
 
 interface CatalogListViewProps {
   items: CardImpression[]
@@ -13,11 +13,12 @@ export function CatalogListView({ items, onAddToCollection }: CatalogListViewPro
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
       <ul className="divide-y divide-[var(--color-border)]">
         {items.map((item) => {
-          const params = new URLSearchParams({ lang: item.language })
-          if (item.setCode && item.setCode !== '—') {
-            params.set('set', item.setCode)
-          }
-          const detailUrl = `/cards/${item.cardId}?${params.toString()}`
+          const detailUrl = buildCardDetailPath(item.cardId, {
+            lang: item.language,
+            setCode: item.setCode,
+            setRarity: item.setRarity,
+            setName: item.setName,
+          })
 
           return (
             <li

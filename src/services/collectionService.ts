@@ -205,6 +205,75 @@ export async function updateCollectionQuantity(
   return mapItem(data as Record<string, unknown>)
 }
 
+/**
+ * Corrige a impressão (raridade/set) de um item da coleção.
+ * Se já existir outra linha com a mesma impressão, mescla as quantidades.
+ */
+export async function updateCollectionImpression(
+  id: string,
+  next: {
+    set_code: string
+    set_name: string
+    set_rarity: string
+  },
+): Promise<CollectionItem> {
+  const { data: currentRow, error: currentError } = await supabase
+    .from('collection_items')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (currentError) throw new Error(currentError.message)
+  const current = mapItem(currentRow as Record<string, unknown>)
+
+  const sameImpression =
+    current.set_code.toLowerCase() === next.set_code.toLowerCase() &&
+    (current.set_rarity || '') === (next.set_rarity || '') &&
+    (current.set_name || '') === (next.set_name || '')
+
+  if (sameImpression) return current
+
+  const existing = await findCollectionItem({
+    cardId: current.card_id,
+    setCode: next.set_code,
+    setRarity: next.set_rarity || '',
+    language: current.language,
+  })
+
+  if (existing && existing.id !== id) {
+    const mergedQty = existing.quantity + current.quantity
+    const { data, error } = await supabase
+      .from('collection_items')
+      .update({
+        quantity: mergedQty,
+        set_name: next.set_name,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id)
+      .select('*')
+      .single()
+
+    if (error) throw new Error(error.message)
+    await removeFromCollection(id)
+    return mapItem(data as Record<string, unknown>)
+  }
+
+  const { data, error } = await supabase
+    .from('collection_items')
+    .update({
+      set_code: next.set_code,
+      set_name: next.set_name,
+      set_rarity: next.set_rarity || '',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select('*')
+    .single()
+
+  if (error) throw new Error(error.message)
+  return mapItem(data as Record<string, unknown>)
+}
+
 export async function removeFromCollection(id: string): Promise<void> {
   const { error } = await supabase.from('collection_items').delete().eq('id', id)
   if (error) throw new Error(error.message)

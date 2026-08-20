@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
 import type { CollectionItemWithCard } from '@/types'
-import { getPrimaryImage, languageLabel } from '@/utils/cardHelpers'
+import { getPrimaryImage, languageLabel, buildCardDetailPath } from '@/utils/cardHelpers'
 
 interface CollectionListViewProps {
   items: CollectionItemWithCard[]
@@ -23,7 +23,12 @@ export function CollectionListView({ items, onRemove }: CollectionListViewProps)
               className="flex items-center gap-3 px-3 py-2.5 transition hover:bg-[var(--color-surface-2)]/60"
             >
               <Link
-                to={`/cards/${item.card_id}?set=${encodeURIComponent(item.set_code)}&lang=${displayLang}`}
+                to={buildCardDetailPath(item.card_id, {
+                  lang: displayLang,
+                  setCode: item.set_code,
+                  setRarity: item.set_rarity,
+                  setName: item.set_name,
+                })}
                 className="flex min-w-0 flex-1 items-center gap-3"
               >
                 {images.small || images.full ? (
