@@ -591,6 +591,7 @@ export function CollectionPage() {
         <CollectionGridView
           items={filteredItems}
           size={gridSize}
+          usdBrlRate={usdBrlRate}
           onRemove={(id) => void handleRemove(id)}
         />
       )}

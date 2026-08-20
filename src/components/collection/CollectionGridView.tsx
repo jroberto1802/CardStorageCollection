@@ -2,18 +2,26 @@ import { Link } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
 import type { CollectionItemWithCard, GridCardSize } from '@/types'
 import { gridCardSizeClass } from '@/hooks/useGridCardSize'
-import { getPrimaryImage, buildCardDetailPath } from '@/utils/cardHelpers'
+import {
+  buildCardDetailPath,
+  convertUsdToBrl,
+  formatBrl,
+  getPrimaryImage,
+  resolveCollectionItemPriceUsd,
+} from '@/utils/cardHelpers'
 
 interface CollectionGridViewProps {
   items: CollectionItemWithCard[]
   onRemove: (id: string) => void
   size?: GridCardSize
+  usdBrlRate?: number | null
 }
 
 export function CollectionGridView({
   items,
   onRemove,
   size = 'md',
+  usdBrlRate = null,
 }: CollectionGridViewProps) {
   return (
     <div className={gridCardSizeClass(size)}>
@@ -21,6 +29,13 @@ export function CollectionGridView({
         const images = item.card ? getPrimaryImage(item.card) : { small: null, full: null }
         const name = item.card?.name ?? `Carta #${item.card_id}`
         const displayLang = item.card?.language ?? item.language
+        const unitUsd = resolveCollectionItemPriceUsd(item)
+        const unitBrl =
+          unitUsd != null && usdBrlRate != null
+            ? convertUsdToBrl(unitUsd, usdBrlRate)
+            : null
+        const totalBrl =
+          unitBrl != null && item.quantity > 1 ? unitBrl * item.quantity : null
 
         return (
           <div
@@ -68,6 +83,20 @@ export function CollectionGridView({
                 {item.set_rarity && (
                   <p className="text-xs text-[var(--color-muted)]">{item.set_rarity}</p>
                 )}
+                {unitBrl != null ? (
+                  <p className="text-xs font-semibold tabular-nums text-[var(--color-success)]">
+                    {formatBrl(unitBrl)}
+                    {totalBrl != null ? (
+                      <span className="ml-1 font-normal text-[var(--color-muted)]">
+                        · total {formatBrl(totalBrl)}
+                      </span>
+                    ) : null}
+                  </p>
+                ) : unitUsd != null ? (
+                  <p className="text-xs tabular-nums text-[var(--color-muted)]">
+                    Calculando…
+                  </p>
+                ) : null}
               </div>
             </Link>
             <button

@@ -378,11 +378,9 @@ export function CardDetailPage() {
   }
 
   function impressionOptionsForItem(item: CollectionItem): CardSet[] {
-    const sameCode = sets.filter(
+    return sets.filter(
       (set) => set.set_code.toLowerCase() === item.set_code.toLowerCase(),
     )
-    if (sameCode.length > 1) return sameCode
-    return sets
   }
 
   async function handleChangeOwnedImpression(
@@ -559,7 +557,7 @@ export function CardDetailPage() {
                       {canFixRarity ? (
                         <div className="mt-3">
                           <label className="mb-1 block text-[11px] text-[var(--color-muted)]">
-                            Trocar raridade / impressão
+                            Trocar raridade
                           </label>
                           <select
                             value={
@@ -578,7 +576,7 @@ export function CardDetailPage() {
                           >
                             {options.map((set) => (
                               <option key={setKey(set)} value={setKey(set)}>
-                                {set.set_rarity || '—'} · {set.set_code}
+                                {set.set_rarity || '—'}
                                 {set.set_name ? ` · ${set.set_name}` : ''}
                               </option>
                             ))}
