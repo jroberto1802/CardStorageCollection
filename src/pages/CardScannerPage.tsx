@@ -13,28 +13,30 @@ import {
   ScannerCamera,
   type CapturedFrame,
 } from '@/components/scanner/ScannerCamera'
-import { useSettings } from '@/contexts/SettingsContext'
 import {
   identifyCardFromFrame,
-  searchCardsByScannerQuery,
+  suggestScannerMatches,
   terminateOcrWorker,
+  type ScannerSuggestion,
 } from '@/services/cardScannerService'
-import type { AppLanguage, CardImpression } from '@/types'
+import type { AppLanguage } from '@/types'
 import { languageLabel } from '@/utils/cardHelpers'
 
 export function CardScannerPage() {
-  const { language } = useSettings()
   const [ocrText, setOcrText] = useState('')
   const [candidates, setCandidates] = useState<string[]>([])
   const [setCodes, setSetCodes] = useState<string[]>([])
   const [query, setQuery] = useState('')
-  const [matches, setMatches] = useState<CardImpression[]>([])
+  const [suggestions, setSuggestions] = useState<ScannerSuggestion[]>([])
   const [identifying, setIdentifying] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [locked, setLocked] = useState(false)
   const [nameBandPreview, setNameBandPreview] = useState<string | null>(null)
+  const [setCodePreview, setSetCodePreview] = useState<string | null>(null)
+  const [autoDetected, setAutoDetected] = useState(false)
+  const [detectedSetCode, setDetectedSetCode] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [preset, setPreset] = useState<{
     cardId: number
@@ -52,25 +54,29 @@ export function CardScannerPage() {
     }
   }, [])
 
-  async function runSearch(nextQuery: string): Promise<CardImpression[]> {
-    const q = nextQuery.trim()
-    if (!q) {
-      setMatches([])
+  async function runSuggest(params: {
+    ocrName: string
+    setCode?: string | null
+    extraCandidates?: string[]
+  }): Promise<ScannerSuggestion[]> {
+    const ocrName = params.ocrName.trim()
+    if (!ocrName && !params.setCode) {
+      setSuggestions([])
       return []
     }
 
     setSearching(true)
     setError(null)
     try {
-      const items = await searchCardsByScannerQuery({
-        query: q,
-        language,
-        pageSize: 12,
+      const items = await suggestScannerMatches({
+        ocrName: ocrName || params.setCode || '',
+        setCode: params.setCode,
+        extraCandidates: params.extraCandidates,
       })
-      setMatches(items)
+      setSuggestions(items)
       return items
     } catch (err) {
-      setMatches([])
+      setSuggestions([])
       setError(err instanceof Error ? err.message : 'Falha ao buscar no catálogo')
       return []
     } finally {
@@ -84,38 +90,52 @@ export function CardScannerPage() {
     setIdentifying(true)
     setError(null)
     setFeedback(null)
-    setMatches([])
+    setSuggestions([])
     setCandidates([])
     setSetCodes([])
     setOcrText('')
     setNameBandPreview(null)
+    setSetCodePreview(null)
+    setAutoDetected(false)
+    setDetectedSetCode(null)
 
     try {
-      // Primeira chamada baixa modelos por/eng — pode demorar
-      setFeedback('Lendo o nome da carta (PT + EN)...')
+      setFeedback('Auto-enquadrando e lendo nome + set code (PT + EN)...')
       const result = await identifyCardFromFrame(frame.fullCanvas, frame.frame)
 
       setOcrText(result.text.trim())
       setCandidates(result.candidates)
       setSetCodes(result.setCodes)
       setNameBandPreview(result.nameBandPreviewUrl)
+      setSetCodePreview(result.setCodePreviewUrl)
+      setAutoDetected(result.autoDetected)
+      setDetectedSetCode(result.detectedSetCode)
 
-      const best = result.candidates[0] ?? result.setCodes[0] ?? ''
+      const searchByName =
+        result.candidates[0] ?? stripFallbackName(result.text) ?? ''
+      const searchBySet = result.detectedSetCode
+      const best = searchByName || searchBySet || result.setCodes[0] || ''
+
       if (!best) {
         setFeedback(
-          'Não consegui ler o nome. Aproxime a faixa verde do título, com boa luz, e tente de novo.',
+          'Não consegui ler nome nem set code. Enquadre a carta com boa luz e tente de novo.',
         )
         return
       }
 
-      setQuery(best)
-      const items = await runSearch(best)
+      setQuery(searchByName || best)
+      setFeedback('Buscando 3 sugestões (original + autocorreções)...')
+
+      const items = await runSuggest({
+        ocrName: searchByName || best,
+        setCode: searchBySet,
+        extraCandidates: result.candidates.slice(1, 4),
+      })
 
       if (items.length > 0) {
-        // Trava automático ao obter candidatos no catálogo
         setLocked(true)
         setFeedback(
-          `Identificado: “${best}”. Resultado travado — escolha a carta ou escaneie outra.`,
+          `${items.length} sugestão(ões)${result.autoDetected ? ' · auto-enquadrado' : ''}. Escolha a carta ou escaneie outra.`,
         )
       } else {
         setFeedback(
@@ -134,19 +154,26 @@ export function CardScannerPage() {
     }
   }
 
+  function stripFallbackName(text: string): string {
+    return text.replace(/\s+/g, ' ').trim()
+  }
+
   function unlockForNextScan() {
     setLocked(false)
-    setMatches([])
+    setSuggestions([])
     setCandidates([])
     setSetCodes([])
     setQuery('')
     setOcrText('')
     setNameBandPreview(null)
+    setSetCodePreview(null)
+    setAutoDetected(false)
+    setDetectedSetCode(null)
     setFeedback('Pronto para escanear outra carta.')
     setError(null)
   }
 
-  function handleSelectMatch(item: CardImpression) {
+  function handleSelectMatch(item: ScannerSuggestion['item']) {
     setPreset({
       cardId: item.cardId,
       language: item.language,
@@ -170,7 +197,7 @@ export function CardScannerPage() {
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
             Nova abordagem: enquadre a carta e toque em <strong className="text-[var(--color-text)]">Identificar</strong>.
-            OCR em português + inglês. Ao achar no catálogo, o resultado trava sozinho.
+            Auto-enquadra quando possível, lê o nome e o set code (faixa âmbar). OCR em português + inglês.
           </p>
         </div>
         <Link
@@ -233,16 +260,47 @@ export function CardScannerPage() {
             </p>
           )}
 
-          {nameBandPreview && (
-            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-              <p className="mb-2 text-xs text-[var(--color-muted)]">
-                Faixa do nome analisada pelo OCR
-              </p>
-              <img
-                src={nameBandPreview}
-                alt="Faixa do nome"
-                className="max-h-24 w-full rounded-lg bg-white object-contain"
-              />
+          {(autoDetected || detectedSetCode) && (
+            <div className="flex flex-wrap gap-2">
+              {autoDetected && (
+                <span className="rounded-md border border-emerald-400/40 bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-300">
+                  Carta auto-enquadrada
+                </span>
+              )}
+              {detectedSetCode && (
+                <span className="rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1 font-mono text-[11px] text-amber-200">
+                  Set code: {detectedSetCode}
+                </span>
+              )}
+            </div>
+          )}
+
+          {(nameBandPreview || setCodePreview) && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {nameBandPreview && (
+                <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                  <p className="mb-2 text-xs text-[var(--color-muted)]">
+                    Faixa do nome (OCR)
+                  </p>
+                  <img
+                    src={nameBandPreview}
+                    alt="Faixa do nome"
+                    className="max-h-24 w-full rounded-lg bg-white object-contain"
+                  />
+                </div>
+              )}
+              {setCodePreview && (
+                <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                  <p className="mb-2 text-xs text-[var(--color-muted)]">
+                    Faixa do set code (OCR)
+                  </p>
+                  <img
+                    src={setCodePreview}
+                    alt="Faixa do set code"
+                    className="max-h-24 w-full rounded-lg bg-white object-contain"
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -257,16 +315,32 @@ export function CardScannerPage() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void runSearch(query)
+                    if (e.key === 'Enter') {
+                      void runSuggest({
+                        ocrName: query,
+                        setCode: detectedSetCode,
+                        extraCandidates: candidates,
+                      }).then((items) => {
+                        if (items.length > 0) setLocked(true)
+                      })
+                    }
                   }}
-                  placeholder="Nome da carta..."
+                    placeholder="Nome ou set code (PT + EN)..."
                   className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] py-2.5 pr-3 pl-10 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
                 />
               </div>
               <button
                 type="button"
                 disabled={searching || !query.trim()}
-                onClick={() => void runSearch(query)}
+                onClick={() =>
+                  void runSuggest({
+                    ocrName: query,
+                    setCode: detectedSetCode,
+                    extraCandidates: candidates,
+                  }).then((items) => {
+                    if (items.length > 0) setLocked(true)
+                  })
+                }
                 className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
               >
                 {searching ? (
@@ -291,7 +365,11 @@ export function CardScannerPage() {
                     disabled={searching}
                     onClick={() => {
                       setQuery(name)
-                      void runSearch(name).then((items) => {
+                      void runSuggest({
+                        ocrName: name,
+                        setCode: detectedSetCode,
+                        extraCandidates: candidates,
+                      }).then((items) => {
                         if (items.length > 0) setLocked(true)
                       })
                     }}
@@ -312,7 +390,11 @@ export function CardScannerPage() {
                     disabled={searching}
                     onClick={() => {
                       setQuery(code)
-                      void runSearch(code).then((items) => {
+                      void runSuggest({
+                        ocrName: ocrText || code,
+                        setCode: code,
+                        extraCandidates: candidates,
+                      }).then((items) => {
                         if (items.length > 0) setLocked(true)
                       })
                     }}
@@ -338,32 +420,32 @@ export function CardScannerPage() {
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
             <div className="border-b border-[var(--color-border)] px-4 py-3">
-              <h3 className="text-sm font-semibold">Candidatos no catálogo</h3>
+              <h3 className="text-sm font-semibold">3 sugestões (corretor)</h3>
               <p className="text-xs text-[var(--color-muted)]">
-                Selecione a carta e confirme set/raridade.
+                Original + autocorreções · PT/EN · escolha a carta correta
               </p>
             </div>
 
             {searching ? (
               <p className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
-                Buscando no catálogo...
+                Buscando sugestões...
               </p>
-            ) : matches.length === 0 ? (
+            ) : suggestions.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
                 Enquadre a carta e toque em Identificar.
               </p>
             ) : (
               <ul className="divide-y divide-[var(--color-border)]">
-                {matches.map((item) => (
-                  <li key={item.key}>
+                {suggestions.map((row) => (
+                  <li key={`${row.label}-${row.item.key}`}>
                     <button
                       type="button"
-                      onClick={() => handleSelectMatch(item)}
+                      onClick={() => handleSelectMatch(row.item)}
                       className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-[var(--color-surface-2)]/70"
                     >
-                      {item.imageUrlSmall || item.imageUrl ? (
+                      {row.item.imageUrlSmall || row.item.imageUrl ? (
                         <img
-                          src={item.imageUrlSmall ?? item.imageUrl ?? undefined}
+                          src={row.item.imageUrlSmall ?? row.item.imageUrl ?? undefined}
                           alt=""
                           className="h-16 w-11 shrink-0 rounded object-cover"
                         />
@@ -373,16 +455,24 @@ export function CardScannerPage() {
                         </div>
                       )}
                       <span className="min-w-0 flex-1">
+                        <span className="mb-0.5 inline-flex rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--color-muted)]">
+                          {row.label}
+                          {row.query ? ` · “${row.query}”` : ''}
+                        </span>
                         <span className="block truncate text-sm font-semibold">
-                          {item.name}
+                          {row.item.name}
                         </span>
                         <span className="block font-mono text-xs text-[var(--color-accent)]">
-                          {item.setCode}
-                          {item.setRarity !== '—' ? ` · ${item.setRarity}` : ''}
+                          {row.item.setCode}
+                          {row.item.setRarity !== '—'
+                            ? ` · ${row.item.setRarity}`
+                            : ''}
                         </span>
                         <span className="block text-[11px] text-[var(--color-muted)]">
-                          {languageLabel(item.language)}
-                          {item.setName !== 'Sem set' ? ` · ${item.setName}` : ''}
+                          {languageLabel(row.item.language)}
+                          {row.item.setName !== 'Sem set'
+                            ? ` · ${row.item.setName}`
+                            : ''}
                         </span>
                       </span>
                       <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs">

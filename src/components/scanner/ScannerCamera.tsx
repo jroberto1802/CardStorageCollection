@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Camera, ImagePlus, RefreshCw, SwitchCamera } from 'lucide-react'
+import { detectCardFrame } from '@/utils/cardFrameDetector'
 
 export interface CardFrameRect {
   x: number
@@ -114,6 +115,7 @@ export function ScannerCamera({
   const guideRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const cameraGenRef = useRef(0)
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -134,6 +136,7 @@ export function ScannerCamera({
       return
     }
 
+    const gen = ++cameraGenRef.current
     setStarting(true)
     setCameraError(null)
     stopCamera()
@@ -147,22 +150,34 @@ export function ScannerCamera({
           height: { ideal: 1080 },
         },
       })
+      if (gen !== cameraGenRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       streamRef.current = stream
       const video = videoRef.current
       if (video) {
         video.srcObject = stream
         await video.play()
+        if (gen !== cameraGenRef.current) return
         setReady(true)
       }
     } catch (err) {
+      if (gen !== cameraGenRef.current) return
       setReady(false)
-      setCameraError(
-        err instanceof Error
-          ? `Não foi possível abrir a câmera: ${err.message}`
-          : 'Não foi possível abrir a câmera.',
-      )
+      const message = err instanceof Error ? err.message : ''
+      // Ignora corrida play()/load ao reiniciar câmera
+      if (/interrupted by a new load request/i.test(message)) {
+        setCameraError(null)
+      } else {
+        setCameraError(
+          err instanceof Error
+            ? `Não foi possível abrir a câmera: ${err.message}`
+            : 'Não foi possível abrir a câmera.',
+        )
+      }
     } finally {
-      setStarting(false)
+      if (gen === cameraGenRef.current) setStarting(false)
     }
   }, [facingMode, stopCamera])
 
@@ -207,9 +222,10 @@ export function ScannerCamera({
         return
       }
       ctx.drawImage(img, 0, 0)
+      const detected = detectCardFrame(canvas)
       onIdentify({
         fullCanvas: canvas,
-        frame: computeCardFrame(canvas.width, canvas.height),
+        frame: detected ?? computeCardFrame(canvas.width, canvas.height),
         previewUrl: canvas.toDataURL('image/jpeg', 0.85),
       })
       URL.revokeObjectURL(url)
@@ -236,11 +252,12 @@ export function ScannerCamera({
             ref={guideRef}
             className="relative aspect-[59/86] w-[78%] max-w-sm rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
           >
-            {/* Só a área do NOME (esquerda). Direita = ícone Spell/Trap/Monster */}
-            <div className="absolute top-[3.5%] left-[6%] h-[10%] w-[62%] rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20" />
-            <div className="absolute top-[3.5%] right-[5%] h-[10%] w-[18%] rounded-md border border-dashed border-white/25 bg-white/5" />
+            {/* Regiões = mesmas proporções do OCR (moldura = fonte da verdade) */}
+            <div className="absolute top-[4%] left-[5%] h-[6.5%] w-[82%] rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20" />
+            <div className="absolute top-[4%] right-[2%] h-[6.5%] w-[11%] rounded-md border border-dashed border-white/25 bg-white/5" />
+            <div className="absolute top-[54.8%] left-[58%] h-[2.8%] w-[34%] rounded-md border border-dashed border-amber-300/95 bg-amber-400/25" />
             <p className="absolute -bottom-8 left-0 right-0 text-center text-[11px] text-white/90">
-              Verde = nome · cinza = tipo (ignorado no OCR)
+              Verde = nome · âmbar = set code · OCR usa esta moldura
             </p>
           </div>
         </div>

@@ -1,10 +1,11 @@
 import { supabase } from '@/lib/supabase'
-import type {
-  AppLanguage,
-  Card,
-  CardImpression,
-  CatalogFilters,
-  SortOption,
+import {
+  DEFAULT_CATALOG_FILTERS,
+  type AppLanguage,
+  type Card,
+  type CardImpression,
+  type CatalogFilters,
+  type SortOption,
 } from '@/types'
 import {
   cardToCatalogItem,
@@ -243,6 +244,25 @@ async function fetchBrowsePage(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
 }
 
+async function fetchCardsByIds(
+  language: AppLanguage,
+  ids: number[],
+): Promise<Card[]> {
+  if (ids.length === 0) return []
+  const unique = [...new Set(ids)].slice(0, FETCH_LIMIT)
+  const { data, error } = await supabase
+    .from('cards')
+    .select('*')
+    .eq('language', language)
+    .in('id', unique)
+
+  if (error) {
+    console.warn('fetchCardsByIds:', error.message)
+    return []
+  }
+  return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+}
+
 async function searchCardsInLanguage(
   language: AppLanguage,
   query: string,
@@ -305,6 +325,68 @@ export interface CatalogSearchResult {
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+/**
+ * Busca em PT e EN, mantendo as duas versões (não colapsa por idioma).
+ * Usado pelo scanner e pelo botão Buscar.
+ */
+export async function searchCatalogBothLanguages(params: {
+  query: string
+  filters?: CatalogFilters
+  sort?: SortOption
+  page?: number
+  pageSize?: number
+}): Promise<CatalogSearchResult> {
+  const page = params.page ?? 0
+  const pageSize = params.pageSize ?? 24
+  const filters = params.filters ?? DEFAULT_CATALOG_FILTERS
+  const sort = params.sort ?? 'name_asc'
+  const query = normalizeQuery(params.query)
+
+  if (!query) {
+    return { items: [], total: 0, page, pageSize, hasMore: false }
+  }
+
+  const [ptCards, enCards] = await Promise.all([
+    searchCardsInLanguage('pt', query),
+    searchCardsInLanguage('en', query),
+  ])
+
+  const ptIds = new Set(ptCards.map((c) => c.id))
+  const enIds = new Set(enCards.map((c) => c.id))
+  const missingPt = [...enIds].filter((id) => !ptIds.has(id))
+  const missingEn = [...ptIds].filter((id) => !enIds.has(id))
+
+  const [extraPt, extraEn] = await Promise.all([
+    fetchCardsByIds('pt', missingPt),
+    fetchCardsByIds('en', missingEn),
+  ])
+
+  let cards = mergeCards([ptCards, enCards, extraPt, extraEn])
+  cards = cards.filter((card) => matchesCardFilters(card, filters))
+
+  let items = toCatalogItems(cards, query)
+  items = sortImpressions(items, sort)
+
+  // Preferir par PT/EN do mesmo id juntos: PT primeiro, depois EN
+  items.sort((a, b) => {
+    if (a.cardId !== b.cardId) return a.cardId - b.cardId
+    if (a.language === b.language) return 0
+    return a.language === 'pt' ? -1 : 1
+  })
+
+  const total = items.length
+  const start = page * pageSize
+  const pageItems = items.slice(start, start + pageSize)
+
+  return {
+    items: pageItems,
+    total,
+    page,
+    pageSize,
+    hasMore: start + pageSize < total,
+  }
 }
 
 export async function searchCatalog(params: {
