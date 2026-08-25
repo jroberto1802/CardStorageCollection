@@ -41,7 +41,24 @@ export function cleanOcrLine(value: string): string {
     .replace(/[|]/g, 'I')
     .replace(/[“”]/g, '"')
     .normalize('NFC')
+    // Remove CJK (kanji do ícone 罠 etc.)
+    .replace(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/g, ' ')
     .replace(/[^\p{L}\p{N}'&\-.\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Tipo da carta na mesma linha do nome (YGO). */
+const CARD_TYPE_NOISE =
+  /\b(TRAP|SPELL|MAGIC|MONSTER|CONTINUOUS|EQUIP|FIELD|RITUAL|COUNTER|QUICK[\s-]?PLAY|FUSION|SYNCHRO|XYZ|LINK|PENDULUM|TOKEN|ARMADILHA|MAGIA|MONSTRO|CONTINUO|CONT[IÍ]NUO|EQUIPAMENTO|CAMPO|RESPOSTA|FUS[AÃ]O|SINCRO|P[EÊ]NDULO)\b/gi
+
+/**
+ * Remove tipo (Trap/Spell/Monster…) deixando só o nome.
+ * Ex.: "ICE BARRIER TRAP" → "ICE BARRIER"
+ */
+export function stripCardTypeFromName(value: string): string {
+  return cleanOcrLine(value)
+    .replace(CARD_TYPE_NOISE, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -56,7 +73,7 @@ export function extractSetCodes(ocrText: string): string[] {
 export function extractCardNameCandidates(ocrText: string, limit = 6): string[] {
   const lines = ocrText
     .split(/\r?\n/)
-    .map(cleanOcrLine)
+    .map(stripCardTypeFromName)
     .filter((line) => line.length >= 3 && /\p{L}{2,}/u.test(line))
     .filter((line) => !/^[A-Z0-9-]{3,12}$/i.test(line))
     .filter((line) => {
@@ -92,8 +109,8 @@ export function extractCardNameCandidates(ocrText: string, limit = 6): string[] 
     if (unique.length >= limit) break
   }
 
-  if (lines.length >= 2) {
-    const joined = cleanOcrLine(`${lines[0]} ${lines[1]}`)
+  if (lines.length >= 2 && lines[0].split(' ').length === 1) {
+    const joined = stripCardTypeFromName(`${lines[0]} ${lines[1]}`)
     if (
       joined.length >= 6 &&
       !unique.some((u) => u.toLowerCase() === joined.toLowerCase())
@@ -120,19 +137,19 @@ function cropRect(
   return canvas
 }
 
+/**
+ * Recorta APENAS a região do nome (esquerda da name box).
+ * Direita (~20–22%) = ícone Spell/Trap/Monster — fora do OCR.
+ */
 export function cropNameBandFromFrame(
   source: HTMLCanvasElement,
   frame: CardFrameRect,
 ): HTMLCanvasElement {
-  const topPad = Math.round(frame.height * 0.025)
-  const bandHeight = Math.max(40, Math.round(frame.height * 0.14))
-  const sidePad = Math.round(frame.width * 0.08)
-  return cropRect(source, {
-    x: frame.x + sidePad,
-    y: frame.y + topPad,
-    width: Math.max(1, frame.width - sidePad * 2),
-    height: bandHeight,
-  })
+  const y = frame.y + Math.round(frame.height * 0.035)
+  const height = Math.max(36, Math.round(frame.height * 0.1))
+  const x = frame.x + Math.round(frame.width * 0.055)
+  const width = Math.max(1, Math.round(frame.width * 0.62))
+  return cropRect(source, { x, y, width, height })
 }
 
 /**
@@ -224,9 +241,10 @@ export async function identifyCardFromFrame(
   )
   const best = ranked[0] ?? { text: '', confidence: 0 }
   const merged = `${lineResult.text}\n${blockResult.text}`
+  const cleanedBest = stripCardTypeFromName(best.text.trim() || merged.trim())
 
   return {
-    text: best.text.trim() || merged.trim(),
+    text: cleanedBest || best.text.trim() || merged.trim(),
     confidence: best.confidence,
     candidates: extractCardNameCandidates(merged, 8),
     setCodes: extractSetCodes(merged),

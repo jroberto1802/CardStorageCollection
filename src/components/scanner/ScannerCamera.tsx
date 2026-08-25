@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Camera, ImagePlus, RefreshCw, SwitchCamera } from 'lucide-react'
 
+export interface CardFrameRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface CapturedFrame {
   fullCanvas: HTMLCanvasElement
-  frame: { x: number; y: number; width: number; height: number }
+  /** Retângulo da moldura da carta em pixels do canvas/vídeo */
+  frame: CardFrameRect
   previewUrl: string
 }
 
@@ -13,41 +21,88 @@ interface ScannerCameraProps {
   onIdentify: (frame: CapturedFrame) => void
 }
 
+/** Fallback quando não há DOM da moldura (ex.: upload de arquivo). */
 export function computeCardFrame(
-  videoWidth: number,
-  videoHeight: number,
-): { x: number; y: number; width: number; height: number } {
+  mediaWidth: number,
+  mediaHeight: number,
+): CardFrameRect {
   const targetRatio = 59 / 86
-  let width = videoWidth * 0.78
+  let width = mediaWidth * 0.78
   let height = width / targetRatio
-  if (height > videoHeight * 0.88) {
-    height = videoHeight * 0.88
+  if (height > mediaHeight * 0.88) {
+    height = mediaHeight * 0.88
     width = height * targetRatio
   }
-  const x = (videoWidth - width) / 2
-  const y = (videoHeight - height) / 2
   return {
-    x: Math.round(x),
-    y: Math.round(y),
+    x: Math.round((mediaWidth - width) / 2),
+    y: Math.round((mediaHeight - height) / 2),
     width: Math.round(width),
     height: Math.round(height),
   }
 }
 
-function canvasFromVideo(video: HTMLVideoElement): CapturedFrame | null {
-  if (video.videoWidth === 0 || video.videoHeight === 0) return null
+/**
+ * Área real do vídeo dentro do elemento com object-fit: contain
+ * (exclui as barras pretas).
+ */
+function getContainedVideoContent(
+  video: HTMLVideoElement,
+): { offsetX: number; offsetY: number; scale: number } {
+  const elW = video.clientWidth
+  const elH = video.clientHeight
+  const vw = video.videoWidth
+  const vh = video.videoHeight
+  if (!elW || !elH || !vw || !vh) {
+    return { offsetX: 0, offsetY: 0, scale: 1 }
+  }
+  const scale = Math.min(elW / vw, elH / vh)
+  const dispW = vw * scale
+  const dispH = vh * scale
+  return {
+    offsetX: (elW - dispW) / 2,
+    offsetY: (elH - dispH) / 2,
+    scale,
+  }
+}
+
+/** Converte a moldura visível (DOM) para pixels do frame de vídeo. */
+export function mapGuideElementToVideoPixels(
+  video: HTMLVideoElement,
+  guideEl: HTMLElement,
+): CardFrameRect | null {
+  if (!video.videoWidth || !video.videoHeight) return null
+
+  const videoRect = video.getBoundingClientRect()
+  const guideRect = guideEl.getBoundingClientRect()
+  const { offsetX, offsetY, scale } = getContainedVideoContent(video)
+  if (scale <= 0) return null
+
+  const relX = guideRect.left - videoRect.left - offsetX
+  const relY = guideRect.top - videoRect.top - offsetY
+
+  const x = Math.round(relX / scale)
+  const y = Math.round(relY / scale)
+  const width = Math.round(guideRect.width / scale)
+  const height = Math.round(guideRect.height / scale)
+
+  // Clamp dentro do frame
+  const clampedX = Math.max(0, Math.min(x, video.videoWidth - 1))
+  const clampedY = Math.max(0, Math.min(y, video.videoHeight - 1))
+  const clampedW = Math.max(1, Math.min(width, video.videoWidth - clampedX))
+  const clampedH = Math.max(1, Math.min(height, video.videoHeight - clampedY))
+
+  return { x: clampedX, y: clampedY, width: clampedW, height: clampedH }
+}
+
+function captureVideoCanvas(video: HTMLVideoElement): HTMLCanvasElement | null {
+  if (!video.videoWidth || !video.videoHeight) return null
   const canvas = document.createElement('canvas')
   canvas.width = video.videoWidth
   canvas.height = video.videoHeight
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-  const frame = computeCardFrame(canvas.width, canvas.height)
-  return {
-    fullCanvas: canvas,
-    frame,
-    previewUrl: canvas.toDataURL('image/jpeg', 0.85),
-  }
+  return canvas
 }
 
 export function ScannerCamera({
@@ -56,6 +111,7 @@ export function ScannerCamera({
   onIdentify,
 }: ScannerCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const guideRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
@@ -117,9 +173,21 @@ export function ScannerCamera({
 
   function handleIdentify() {
     const video = videoRef.current
+    const guide = guideRef.current
     if (!video || !ready) return
-    const frame = canvasFromVideo(video)
-    if (frame) onIdentify(frame)
+
+    const canvas = captureVideoCanvas(video)
+    if (!canvas) return
+
+    const frame =
+      (guide ? mapGuideElementToVideoPixels(video, guide) : null) ??
+      computeCardFrame(canvas.width, canvas.height)
+
+    onIdentify({
+      fullCanvas: canvas,
+      frame,
+      previewUrl: canvas.toDataURL('image/jpeg', 0.85),
+    })
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -139,10 +207,9 @@ export function ScannerCamera({
         return
       }
       ctx.drawImage(img, 0, 0)
-      const frame = computeCardFrame(canvas.width, canvas.height)
       onIdentify({
         fullCanvas: canvas,
-        frame,
+        frame: computeCardFrame(canvas.width, canvas.height),
         previewUrl: canvas.toDataURL('image/jpeg', 0.85),
       })
       URL.revokeObjectURL(url)
@@ -163,11 +230,17 @@ export function ScannerCamera({
           className="aspect-[3/4] w-full object-contain bg-black"
         />
 
+        {/* Moldura alinhada 1:1 com o crop do OCR via getBoundingClientRect */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-5">
-          <div className="relative aspect-[59/86] w-[78%] max-w-sm rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]">
-            <div className="absolute top-[3%] right-[8%] left-[8%] h-[12%] rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/15" />
+          <div
+            ref={guideRef}
+            className="relative aspect-[59/86] w-[78%] max-w-sm rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
+          >
+            {/* Só a área do NOME (esquerda). Direita = ícone Spell/Trap/Monster */}
+            <div className="absolute top-[3.5%] left-[6%] h-[10%] w-[62%] rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20" />
+            <div className="absolute top-[3.5%] right-[5%] h-[10%] w-[18%] rounded-md border border-dashed border-white/25 bg-white/5" />
             <p className="absolute -bottom-8 left-0 right-0 text-center text-[11px] text-white/90">
-              Encaixe a carta · nome na faixa verde · depois Identificar
+              Verde = nome · cinza = tipo (ignorado no OCR)
             </p>
           </div>
         </div>
