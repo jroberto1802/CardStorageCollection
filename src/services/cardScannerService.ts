@@ -164,7 +164,6 @@ export function preprocessForOcr(
   scale = 3,
 ): HTMLCanvasElement {
   const targetW = Math.max(1, Math.round(source.width * scale))
-  const targetH = Math.max(1, Math.round(source.height * scale))
   // Largura mínima ajuda LSTM
   const minW = 600
   const finalScale = targetW < minW ? minW / source.width : scale
