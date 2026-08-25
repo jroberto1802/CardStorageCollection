@@ -7,16 +7,15 @@ export type CardFrameRect = { x: number; y: number; width: number; height: numbe
 
 let workerPromise: Promise<Worker> | null = null
 
+/** PT + EN — cartas localizadas (ex.: Barreira de Gelo) precisam de `por`. */
 async function getOcrWorker(): Promise<Worker> {
   if (!workerPromise) {
     workerPromise = (async () => {
-      const worker = await createWorker('eng')
+      const worker = await createWorker(['por', 'eng'])
       await worker.setParameters({
-        // Evita warning de DPI e melhora LSTM em imagens pequenas
         user_defined_dpi: '300',
         preserve_interword_spaces: '1',
-        tessedit_char_whitelist:
-          "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'&.- ",
+        // Sem whitelist restritiva: acentos PT (ç, ã, é…) são essenciais
       })
       return worker
     })()
@@ -36,12 +35,13 @@ export async function terminateOcrWorker(): Promise<void> {
   }
 }
 
-/** Limpa ruído típico de OCR em nomes de cartas. */
+/** Limpa ruído de OCR preservando acentos do português. */
 export function cleanOcrLine(value: string): string {
   return value
     .replace(/[|]/g, 'I')
     .replace(/[“”]/g, '"')
-    .replace(/[^a-zA-Z0-9'&\-.\s]/g, ' ')
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}'&\-.\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -53,34 +53,32 @@ export function extractSetCodes(ocrText: string): string[] {
   return [...new Set(found.map((s) => s.toUpperCase()))]
 }
 
-/**
- * Extrai candidatos a nome de carta a partir do texto OCR.
- * Prioriza linhas longas com letras (faixa do nome).
- */
 export function extractCardNameCandidates(ocrText: string, limit = 6): string[] {
   const lines = ocrText
     .split(/\r?\n/)
     .map(cleanOcrLine)
-    .filter((line) => line.length >= 3 && /[A-Za-z]{2,}/.test(line))
-    // Remove linhas que são só set code / números
+    .filter((line) => line.length >= 3 && /\p{L}{2,}/u.test(line))
     .filter((line) => !/^[A-Z0-9-]{3,12}$/i.test(line))
     .filter((line) => {
-      const withoutCodes = line.replace(/\b[A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4}\b/gi, '').trim()
-      // Se a linha era só set code, descarta; se tem nome + set code, mantém
-      return withoutCodes.length >= 3 || !/\b[A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4}\b/i.test(line)
+      const withoutCodes = line
+        .replace(/\b[A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4}\b/gi, '')
+        .trim()
+      return (
+        withoutCodes.length >= 3 ||
+        !/\b[A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4}\b/i.test(line)
+      )
     })
 
   const scored = lines.map((line, index) => {
     const words = line.split(' ').filter(Boolean)
     const letterRatio =
-      (line.replace(/[^A-Za-z]/g, '').length || 0) / Math.max(line.length, 1)
+      (line.replace(/[^\p{L}]/gu, '').length || 0) / Math.max(line.length, 1)
     const score =
       line.length * 2 +
       words.length * 10 +
       letterRatio * 25 -
       index * 2 -
-      (/\d{3,}/.test(line) ? 20 : 0) -
-      (words.length === 1 && line.length < 8 ? 10 : 0)
+      (/\d{3,}/.test(line) ? 20 : 0)
     return { line, score }
   })
 
@@ -88,10 +86,9 @@ export function extractCardNameCandidates(ocrText: string, limit = 6): string[] 
 
   const unique: string[] = []
   for (const row of scored) {
-    const exists = unique.some(
-      (u) => u.toLowerCase() === row.line.toLowerCase(),
-    )
-    if (!exists) unique.push(row.line)
+    if (!unique.some((u) => u.toLowerCase() === row.line.toLowerCase())) {
+      unique.push(row.line)
+    }
     if (unique.length >= limit) break
   }
 
@@ -123,14 +120,13 @@ function cropRect(
   return canvas
 }
 
-/** Faixa do nome (~topo da carta). */
 export function cropNameBandFromFrame(
   source: HTMLCanvasElement,
   frame: CardFrameRect,
 ): HTMLCanvasElement {
-  const topPad = Math.round(frame.height * 0.02)
-  const bandHeight = Math.max(32, Math.round(frame.height * 0.16))
-  const sidePad = Math.round(frame.width * 0.06)
+  const topPad = Math.round(frame.height * 0.025)
+  const bandHeight = Math.max(40, Math.round(frame.height * 0.14))
+  const sidePad = Math.round(frame.width * 0.08)
   return cropRect(source, {
     x: frame.x + sidePad,
     y: frame.y + topPad,
@@ -139,36 +135,14 @@ export function cropNameBandFromFrame(
   })
 }
 
-/** Região da arte + nome (metade superior) — fallback. */
-export function cropUpperCardFromFrame(
-  source: HTMLCanvasElement,
-  frame: CardFrameRect,
-): HTMLCanvasElement {
-  return cropRect(source, {
-    x: frame.x,
-    y: frame.y,
-    width: frame.width,
-    height: Math.max(1, Math.round(frame.height * 0.45)),
-  })
-}
-
-type PreprocessMode = 'contrast' | 'threshold' | 'invertThreshold'
-
 /**
- * Pré-processa para OCR: upscale + escala de cinza + contraste/limiar.
- * Tesseract lê bem pior em foto colorida pequena sem isso.
+ * Upscale + cinza + contraste alto (sem limiar agressivo que destrói letras).
  */
-export function preprocessForOcr(
-  source: HTMLCanvasElement,
-  mode: PreprocessMode = 'contrast',
-  scale = 3,
-): HTMLCanvasElement {
-  const targetW = Math.max(1, Math.round(source.width * scale))
-  // Largura mínima ajuda LSTM
-  const minW = 600
-  const finalScale = targetW < minW ? minW / source.width : scale
-  const w = Math.max(1, Math.round(source.width * finalScale))
-  const h = Math.max(1, Math.round(source.height * finalScale))
+export function preprocessForOcr(source: HTMLCanvasElement): HTMLCanvasElement {
+  const minW = 900
+  const scale = Math.max(3, minW / Math.max(source.width, 1))
+  const w = Math.max(1, Math.round(source.width * scale))
+  const h = Math.max(1, Math.round(source.height * scale))
 
   const canvas = document.createElement('canvas')
   canvas.width = w
@@ -184,33 +158,14 @@ export function preprocessForOcr(
 
   const imageData = ctx.getImageData(0, 0, w, h)
   const data = imageData.data
-
-  let sum = 0
-  const grays = new Uint8ClampedArray(w * h)
-  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+  for (let i = 0; i < data.length; i += 4) {
     let g = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
-    // contraste
-    g = (g - 128) * 1.85 + 128
+    g = (g - 128) * 1.55 + 128
     g = Math.max(0, Math.min(255, g))
-    grays[p] = g
-    sum += g
+    data[i] = g
+    data[i + 1] = g
+    data[i + 2] = g
   }
-
-  const mean = sum / grays.length
-  // Limiar adaptativo simples em torno da média
-  const threshold = Math.max(90, Math.min(170, mean * 0.92))
-
-  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-    let v = grays[p]
-    if (mode === 'threshold' || mode === 'invertThreshold') {
-      v = v > threshold ? 255 : 0
-      if (mode === 'invertThreshold') v = 255 - v
-    }
-    data[i] = v
-    data[i + 1] = v
-    data[i + 2] = v
-  }
-
   ctx.putImageData(imageData, 0, 0)
   return canvas
 }
@@ -224,8 +179,6 @@ async function recognizeOnce(
     tessedit_pageseg_mode: psm,
     user_defined_dpi: '300',
     preserve_interword_spaces: '1',
-    tessedit_char_whitelist:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'&.- ",
   })
   const result = await worker.recognize(image)
   return {
@@ -236,74 +189,48 @@ async function recognizeOnce(
 
 function scoreOcrResult(text: string, confidence: number): number {
   const names = extractCardNameCandidates(text, 3)
-  const setCodes = extractSetCodes(text)
   const bestLen = names[0]?.length ?? 0
-  return confidence + bestLen * 2 + names.length * 5 + setCodes.length * 15
+  return confidence + bestLen * 3 + names.length * 8 + extractSetCodes(text).length * 12
 }
 
-/**
- * OCR robusto: várias regiões + pré-processamentos + modos PSM.
- * Retorna o melhor texto agregado e candidatos.
- */
-export async function identifyCardFromFrame(
-  fullCanvas: HTMLCanvasElement,
-  frame: CardFrameRect,
-): Promise<{
+export interface IdentifyResult {
   text: string
   confidence: number
   candidates: string[]
   setCodes: string[]
-}> {
+  /** Preview da faixa do nome enviada ao OCR (debug/UX) */
+  nameBandPreviewUrl: string
+}
+
+/**
+ * Uma identificação focada: faixa do nome, PT+EN, poucos passes de qualidade.
+ */
+export async function identifyCardFromFrame(
+  fullCanvas: HTMLCanvasElement,
+  frame: CardFrameRect,
+): Promise<IdentifyResult> {
   const nameBand = cropNameBandFromFrame(fullCanvas, frame)
-  const upper = cropUpperCardFromFrame(fullCanvas, frame)
+  const prepared = preprocessForOcr(nameBand)
+  const nameBandPreviewUrl = prepared.toDataURL('image/jpeg', 0.85)
 
-  const jobs: Array<Promise<{ text: string; confidence: number; label: string }>> =
-    []
+  // Dois modos: linha única (ideal para nome) e bloco (fallback)
+  const [lineResult, blockResult] = await Promise.all([
+    recognizeOnce(prepared, PSM.SINGLE_LINE),
+    recognizeOnce(prepared, PSM.SINGLE_BLOCK),
+  ])
 
-  const pushJob = (
-    source: HTMLCanvasElement,
-    mode: PreprocessMode,
-    psm: typeof PSM[keyof typeof PSM],
-    label: string,
-  ) => {
-    const prepared = preprocessForOcr(source, mode)
-    jobs.push(
-      recognizeOnce(prepared, psm).then((r) => ({ ...r, label })),
-    )
-  }
-
-  // Nome: linha única + bloco
-  pushJob(nameBand, 'contrast', PSM.SINGLE_LINE, 'name-contrast-line')
-  pushJob(nameBand, 'threshold', PSM.SINGLE_LINE, 'name-th-line')
-  pushJob(nameBand, 'invertThreshold', PSM.SINGLE_LINE, 'name-inv-line')
-  pushJob(nameBand, 'contrast', PSM.SINGLE_BLOCK, 'name-contrast-block')
-  // Metade superior (fallback se a faixa falhar)
-  pushJob(upper, 'contrast', PSM.SPARSE_TEXT, 'upper-sparse')
-  pushJob(upper, 'threshold', PSM.SPARSE_TEXT, 'upper-th-sparse')
-
-  const results = await Promise.all(jobs)
-  results.sort(
+  const ranked = [lineResult, blockResult].sort(
     (a, b) => scoreOcrResult(b.text, b.confidence) - scoreOcrResult(a.text, a.confidence),
   )
-
-  const best = results[0] ?? { text: '', confidence: 0, label: 'none' }
-  const mergedText = results
-    .slice(0, 3)
-    .map((r) => r.text)
-    .filter(Boolean)
-    .join('\n')
-
-  const candidates = extractCardNameCandidates(
-    `${best.text}\n${mergedText}`,
-    8,
-  )
-  const setCodes = extractSetCodes(`${best.text}\n${mergedText}`)
+  const best = ranked[0] ?? { text: '', confidence: 0 }
+  const merged = `${lineResult.text}\n${blockResult.text}`
 
   return {
-    text: best.text.trim() || mergedText.trim(),
+    text: best.text.trim() || merged.trim(),
     confidence: best.confidence,
-    candidates,
-    setCodes,
+    candidates: extractCardNameCandidates(merged, 8),
+    setCodes: extractSetCodes(merged),
+    nameBandPreviewUrl,
   }
 }
 
@@ -317,38 +244,33 @@ export async function searchCardsByScannerQuery(params: {
 
   const pageSize = params.pageSize ?? 12
 
-  const runs: Promise<{ items: CardImpression[] }>[] = [
+  // Sempre busca PT e EN — nomes localizados vs originais
+  const [ptResult, enResult] = await Promise.all([
     searchCatalog({
-      language: params.language,
+      language: 'pt',
       query,
       filters: DEFAULT_CATALOG_FILTERS,
       sort: 'name_asc',
       page: 0,
       pageSize,
     }),
-  ]
+    searchCatalog({
+      language: 'en',
+      query,
+      filters: DEFAULT_CATALOG_FILTERS,
+      sort: 'name_asc',
+      page: 0,
+      pageSize,
+    }),
+  ])
 
-  if (params.language !== 'en') {
-    runs.push(
-      searchCatalog({
-        language: 'en',
-        query,
-        filters: DEFAULT_CATALOG_FILTERS,
-        sort: 'name_asc',
-        page: 0,
-        pageSize,
-      }),
-    )
-  }
-
-  const results = await Promise.all(runs)
+  const preferred = params.language === 'pt' ? ptResult.items : enResult.items
+  const secondary = params.language === 'pt' ? enResult.items : ptResult.items
   const map = new Map<string, CardImpression>()
 
-  for (const result of results) {
-    for (const item of result.items) {
-      const key = `${item.cardId}-${item.language}`
-      if (!map.has(key)) map.set(key, item)
-    }
+  for (const item of [...preferred, ...secondary]) {
+    const key = `${item.cardId}-${item.language}`
+    if (!map.has(key)) map.set(key, item)
   }
 
   return [...map.values()].slice(0, pageSize)
