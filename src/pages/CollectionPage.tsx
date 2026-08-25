@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { BookOpen, Grid3X3, List, Plus, Search, X } from 'lucide-react'
+import { useSearchParams, Link } from 'react-router-dom'
+import { BookOpen, Grid3X3, List, Plus, ScanLine, Search, X } from 'lucide-react'
 import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
 import { CollectionAlbumView } from '@/components/collection/CollectionAlbumView'
 import { CollectionGridView } from '@/components/collection/CollectionGridView'
@@ -321,14 +321,23 @@ export function CollectionPage() {
             No modo álbum, veja o progresso por coleção como figurinhas.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)]"
-        >
-          <Plus className="h-4 w-4" />
-          Adicionar carta
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to="/scanner"
+            className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-text)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+          >
+            <ScanLine className="h-4 w-4 text-[var(--color-accent)]" />
+            Escanear carta
+          </Link>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)]"
+          >
+            <Plus className="h-4 w-4" />
+            Adicionar carta
+          </button>
+        </div>
       </div>
 
       <CollectionStatsCards

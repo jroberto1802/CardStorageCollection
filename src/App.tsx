@@ -12,6 +12,7 @@ import { DecksPage } from '@/pages/DecksPage'
 import { DeckBuilderPage } from '@/pages/DeckBuilderPage'
 import { CommunityDecksPage } from '@/pages/CommunityDecksPage'
 import { CommunityDeckDetailPage } from '@/pages/CommunityDeckDetailPage'
+import { CardScannerPage } from '@/pages/CardScannerPage'
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
                 <Route path="/" element={<HomePage />} />
                 <Route path="/cards/:cardId" element={<CardDetailPage />} />
                 <Route path="/collection" element={<CollectionPage />} />
+                <Route path="/scanner" element={<CardScannerPage />} />
                 <Route path="/community" element={<CommunityDecksPage />} />
                 <Route
                   path="/community/:syncedDeckId"

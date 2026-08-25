@@ -6,6 +6,7 @@ import {
   Layers3,
   LogOut,
   Menu,
+  ScanLine,
   Settings,
   User,
   Users,
@@ -80,6 +81,12 @@ export function AppLayout() {
               <span className="inline-flex items-center gap-1.5">
                 <Bookmark className="h-4 w-4" />
                 Minha coleção
+              </span>
+            </NavLink>
+            <NavLink to="/scanner" className={linkClass}>
+              <span className="inline-flex items-center gap-1.5">
+                <ScanLine className="h-4 w-4" />
+                Scanner
               </span>
             </NavLink>
             <NavLink to="/decks" className={linkClass}>
@@ -180,6 +187,14 @@ export function AppLayout() {
               >
                 <Bookmark className="h-4 w-4" />
                 Minha coleção
+              </NavLink>
+              <NavLink
+                to="/scanner"
+                className={mobileNavClass}
+                onClick={() => setNavOpen(false)}
+              >
+                <ScanLine className="h-4 w-4" />
+                Scanner
               </NavLink>
               <NavLink
                 to="/decks"
