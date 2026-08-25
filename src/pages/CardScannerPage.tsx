@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   BookmarkPlus,
@@ -6,7 +6,6 @@ import {
   ScanLine,
   Search,
   Sparkles,
-  X,
 } from 'lucide-react'
 import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
 import {
@@ -15,9 +14,7 @@ import {
 } from '@/components/scanner/ScannerCamera'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
-  cropNameBandFromFrame,
-  extractCardNameCandidates,
-  recognizeCardText,
+  identifyCardFromFrame,
   searchCardsByScannerQuery,
   terminateOcrWorker,
 } from '@/services/cardScannerService'
@@ -26,9 +23,9 @@ import { languageLabel } from '@/utils/cardHelpers'
 
 export function CardScannerPage() {
   const { language } = useSettings()
-  const [captured, setCaptured] = useState<CapturedFrame | null>(null)
   const [ocrText, setOcrText] = useState('')
   const [candidates, setCandidates] = useState<string[]>([])
+  const [setCodes, setSetCodes] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<CardImpression[]>([])
   const [scanning, setScanning] = useState(false)
@@ -43,6 +40,12 @@ export function CardScannerPage() {
     setName: string
     setRarity: string
   } | null>(null)
+  const [queryLocked, setQueryLocked] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  const scanningRef = useRef(false)
+  const lastQueryRef = useRef('')
+  const identifyGen = useRef(0)
 
   useEffect(() => {
     return () => {
@@ -50,73 +53,94 @@ export function CardScannerPage() {
     }
   }, [])
 
-  async function runIdentify(frame: CapturedFrame) {
-    setCaptured(frame)
-    setScanning(true)
-    setError(null)
-    setFeedback(null)
-    setMatches([])
-    setOcrText('')
-    setCandidates([])
-
-    try {
-      const nameBand = cropNameBandFromFrame(frame.fullCanvas, frame.frame)
-      const { text, confidence } = await recognizeCardText(nameBand)
-      const names = extractCardNameCandidates(text)
-      setOcrText(text.trim())
-      setCandidates(names)
-
-      const best = names[0] ?? ''
-      setQuery(best)
-
-      if (!best) {
-        setFeedback(
-          confidence > 0
-            ? 'Texto detectado, mas nenhum nome claro. Edite a busca manualmente.'
-            : 'Não foi possível ler o nome. Tente outra foto com mais luz.',
-        )
+  const runSearch = useCallback(
+    async (nextQuery: string) => {
+      const q = nextQuery.trim()
+      if (!q) {
+        setMatches([])
         return
       }
 
-      setFeedback(`Nome sugerido: “${best}”. Confirme ou ajuste antes de adicionar.`)
-      await runSearch(best)
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Falha ao identificar a carta. Tente novamente.',
-      )
-    } finally {
-      setScanning(false)
-    }
-  }
-
-  async function runSearch(nextQuery: string) {
-    const q = nextQuery.trim()
-    if (!q) {
-      setMatches([])
-      return
-    }
-
-    setSearching(true)
-    setError(null)
-    try {
-      const items = await searchCardsByScannerQuery({
-        query: q,
-        language,
-        pageSize: 12,
-      })
-      setMatches(items)
-      if (items.length === 0) {
-        setFeedback('Nenhuma carta encontrada no catálogo para essa busca.')
+      setSearching(true)
+      setError(null)
+      try {
+        const items = await searchCardsByScannerQuery({
+          query: q,
+          language,
+          pageSize: 12,
+        })
+        setMatches(items)
+        if (items.length === 0) {
+          setFeedback('Nenhuma carta encontrada no catálogo para essa busca.')
+        } else {
+          setFeedback(
+            `${items.length} candidato${items.length === 1 ? '' : 's'} encontrado${items.length === 1 ? '' : 's'}. Selecione para adicionar.`,
+          )
+        }
+      } catch (err) {
+        setMatches([])
+        setError(err instanceof Error ? err.message : 'Falha ao buscar no catálogo')
+      } finally {
+        setSearching(false)
       }
-    } catch (err) {
-      setMatches([])
-      setError(err instanceof Error ? err.message : 'Falha ao buscar no catálogo')
-    } finally {
-      setSearching(false)
-    }
-  }
+    },
+    [language],
+  )
+
+  const runIdentify = useCallback(
+    async (frame: CapturedFrame) => {
+      if (scanningRef.current || modalOpen) return
+      scanningRef.current = true
+      setScanning(true)
+      setError(null)
+      const gen = ++identifyGen.current
+
+      try {
+        setPreviewUrl(frame.previewUrl)
+        const result = await identifyCardFromFrame(frame.fullCanvas, frame.frame)
+        if (gen !== identifyGen.current) return
+
+        setOcrText(result.text.trim())
+        setCandidates(result.candidates)
+        setSetCodes(result.setCodes)
+
+        const best =
+          result.candidates[0] ??
+          result.setCodes[0] ??
+          ''
+
+        if (!best) {
+          setFeedback(
+            'Ainda não li um nome claro. Segure a carta firme, com boa luz, na faixa verde.',
+          )
+          return
+        }
+
+        if (!queryLocked) {
+          setQuery(best)
+          if (best.toLowerCase() !== lastQueryRef.current.toLowerCase()) {
+            lastQueryRef.current = best
+            await runSearch(best)
+          }
+        } else {
+          setFeedback(`Detectado “${best}” (busca travada — edite ou desbloqueie).`)
+        }
+      } catch (err) {
+        if (gen !== identifyGen.current) return
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Falha ao identificar a carta. Tente novamente.',
+        )
+      } finally {
+        if (gen === identifyGen.current) {
+          scanningRef.current = false
+          setScanning(false)
+        }
+      }
+    },
+    [modalOpen, queryLocked, runSearch],
+  )
 
   function handleSelectMatch(item: CardImpression) {
     setPreset({
@@ -127,16 +151,6 @@ export function CardScannerPage() {
       setRarity: item.setRarity !== '—' ? item.setRarity : '',
     })
     setModalOpen(true)
-  }
-
-  function resetCapture() {
-    setCaptured(null)
-    setOcrText('')
-    setCandidates([])
-    setQuery('')
-    setMatches([])
-    setError(null)
-    setFeedback(null)
   }
 
   return (
@@ -151,8 +165,9 @@ export function CardScannerPage() {
             Scanner de cartas
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
-            Capture a carta pela câmera (ou envie uma foto). O app lê o nome por OCR,
-            busca no catálogo e você confirma a impressão para adicionar à coleção.
+            Identificação <strong className="font-medium text-[var(--color-text)]">ao vivo</strong>:
+            aponte a câmera para a carta (sem capturar). O OCR lê o nome, busca no catálogo
+            e você confirma set/raridade.
           </p>
         </div>
         <Link
@@ -166,29 +181,26 @@ export function CardScannerPage() {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,420px)_1fr]">
         <section className="space-y-3">
           <h2 className="text-sm font-semibold tracking-wide text-[var(--color-muted)] uppercase">
-            1. Captura
+            1. Câmera ao vivo
           </h2>
-          {!captured ? (
-            <ScannerCamera disabled={scanning} onCapture={(frame) => void runIdentify(frame)} />
-          ) : (
-            <div className="space-y-3">
-              <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-                <img
-                  src={captured.previewUrl}
-                  alt="Captura da carta"
-                  className="aspect-[3/4] w-full object-cover"
-                />
-              </div>
-              <button
-                type="button"
-                disabled={scanning}
-                onClick={resetCapture}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] px-4 py-2.5 text-sm text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] disabled:opacity-50"
-              >
-                <X className="h-4 w-4" />
-                Nova captura
-              </button>
-            </div>
+          <ScannerCamera
+            paused={modalOpen}
+            busy={scanning}
+            liveIntervalMs={2000}
+            onLiveFrame={(frame) => void runIdentify(frame)}
+            onFileFrame={(frame) => void runIdentify(frame)}
+          />
+          {previewUrl && (
+            <details className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+              <summary className="cursor-pointer text-xs text-[var(--color-muted)]">
+                Último frame analisado
+              </summary>
+              <img
+                src={previewUrl}
+                alt="Frame analisado"
+                className="mt-2 max-h-48 w-full rounded-lg object-contain"
+              />
+            </details>
           )}
         </section>
 
@@ -200,7 +212,7 @@ export function CardScannerPage() {
           {scanning && (
             <div className="flex items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-muted)]">
               <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />
-              Lendo o nome da carta (OCR)... na primeira vez pode demorar um pouco.
+              Lendo texto (OCR reforçado)... a 1ª vez pode demorar.
             </div>
           )}
 
@@ -217,27 +229,46 @@ export function CardScannerPage() {
           )}
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-            <label className="mb-1.5 block text-xs text-[var(--color-muted)]">
-              Busca (edite se o OCR errou)
-            </label>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <label className="text-xs text-[var(--color-muted)]">
+                Busca (edite se o OCR errou)
+              </label>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-muted)]">
+                <input
+                  type="checkbox"
+                  checked={queryLocked}
+                  onChange={(e) => setQueryLocked(e.target.checked)}
+                  className="rounded border-[var(--color-border)]"
+                />
+                Travar busca
+              </label>
+            </div>
             <div className="flex gap-2">
               <div className="relative min-w-0 flex-1">
                 <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-[var(--color-muted)]" />
                 <input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => {
+                    setQuery(e.target.value)
+                    setQueryLocked(true)
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') void runSearch(query)
+                    if (e.key === 'Enter') {
+                      lastQueryRef.current = query
+                      void runSearch(query)
+                    }
                   }}
                   placeholder="Nome da carta..."
                   className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] py-2.5 pr-3 pl-10 text-sm outline-none ring-[var(--color-accent)] focus:ring-2"
-                  disabled={scanning}
                 />
               </div>
               <button
                 type="button"
-                disabled={scanning || searching || !query.trim()}
-                onClick={() => void runSearch(query)}
+                disabled={searching || !query.trim()}
+                onClick={() => {
+                  lastQueryRef.current = query
+                  void runSearch(query)
+                }}
                 className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
               >
                 {searching ? (
@@ -249,19 +280,21 @@ export function CardScannerPage() {
               </button>
             </div>
 
-            {candidates.length > 1 && (
+            {(candidates.length > 0 || setCodes.length > 0) && (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-muted)]">
                   <Sparkles className="h-3 w-3" />
-                  Sugestões:
+                  Detectado:
                 </span>
                 {candidates.map((name) => (
                   <button
                     key={name}
                     type="button"
-                    disabled={scanning || searching}
+                    disabled={searching}
                     onClick={() => {
                       setQuery(name)
+                      setQueryLocked(true)
+                      lastQueryRef.current = name
                       void runSearch(name)
                     }}
                     className={[
@@ -272,6 +305,22 @@ export function CardScannerPage() {
                     ].join(' ')}
                   >
                     {name}
+                  </button>
+                ))}
+                {setCodes.map((code) => (
+                  <button
+                    key={code}
+                    type="button"
+                    disabled={searching}
+                    onClick={() => {
+                      setQuery(code)
+                      setQueryLocked(true)
+                      lastQueryRef.current = code
+                      void runSearch(code)
+                    }}
+                    className="rounded-md border border-[var(--color-border)] px-2 py-1 font-mono text-[11px] text-[var(--color-accent)] transition hover:border-[var(--color-accent)]"
+                  >
+                    {code}
                   </button>
                 ))}
               </div>
@@ -303,9 +352,7 @@ export function CardScannerPage() {
               </p>
             ) : matches.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
-                {captured
-                  ? 'Nenhum resultado ainda. Ajuste a busca e tente de novo.'
-                  : 'Capture uma carta para começar.'}
+                Aponte a carta para a câmera. Os resultados aparecem aqui automaticamente.
               </p>
             ) : (
               <ul className="divide-y divide-[var(--color-border)]">
@@ -361,9 +408,10 @@ export function CardScannerPage() {
           setPreset(null)
         }}
         onAdded={() => {
-          setFeedback('Carta adicionada à coleção.')
+          setFeedback('Carta adicionada à coleção. Pode apontar a próxima.')
           setModalOpen(false)
           setPreset(null)
+          setQueryLocked(false)
         }}
       />
     </div>
