@@ -591,13 +591,14 @@ export function CardDetailPage() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [prevNeighbor, nextNeighbor])
 
-  if (loading && !card) {
-    return (
-      <div className="text-sm text-[var(--color-muted)]">Carregando detalhes da carta...</div>
-    )
-  }
-
-  if ((error || !card) && !loading) {
+  if (!card) {
+    if (loading) {
+      return (
+        <div className="text-sm text-[var(--color-muted)]">
+          Carregando detalhes da carta...
+        </div>
+      )
+    }
     return (
       <div className="space-y-4">
         <button
@@ -615,9 +616,11 @@ export function CardDetailPage() {
     )
   }
 
+  const detailCard = card
+
   return (
     <div className="relative space-y-6">
-      {loading && card && (
+      {loading && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-2">
           <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1 text-xs text-[var(--color-muted)] shadow">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -645,7 +648,7 @@ export function CardDetailPage() {
             {images.full ? (
               <img
                 src={images.full}
-                alt={card.name}
+                alt={detailCard.name}
                 className="w-full object-cover"
               />
             ) : (
