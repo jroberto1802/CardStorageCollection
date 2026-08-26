@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Camera, ImagePlus, RefreshCw, SwitchCamera } from 'lucide-react'
-import { detectCardFrame } from '@/utils/cardFrameDetector'
+import {
+  detectCardFrame,
+  regionRatioToStyle,
+  YGO_REGION_RATIOS,
+} from '@/utils/cardFrameDetector'
 
 export interface CardFrameRect {
   x: number
@@ -14,6 +18,8 @@ export interface CapturedFrame {
   /** Retângulo da moldura da carta em pixels do canvas/vídeo */
   frame: CardFrameRect
   previewUrl: string
+  /** camera = guia na tela · photo = upload (prioriza auto-enquadramento) */
+  source?: 'camera' | 'photo'
 }
 
 interface ScannerCameraProps {
@@ -106,6 +112,53 @@ function captureVideoCanvas(video: HTMLVideoElement): HTMLCanvasElement | null {
   return canvas
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function releaseMediaStream(stream: MediaStream | null) {
+  stream?.getTracks().forEach((track) => track.stop())
+}
+
+function isCameraBusyError(err: unknown): boolean {
+  const name = err instanceof DOMException ? err.name : ''
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return (
+    name === 'NotReadableError' ||
+    name === 'AbortError' ||
+    /could not start video|device in use|busy|interrupted by a new load/i.test(
+      message,
+    )
+  )
+}
+
+async function waitForVideoReady(video: HTMLVideoElement): Promise<void> {
+  if (video.readyState >= 2 && video.videoWidth > 0) return
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup()
+      reject(new Error('Timeout ao carregar o vídeo da câmera'))
+    }, 8000)
+    const onReady = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = () => {
+      cleanup()
+      reject(new Error('Falha ao carregar o vídeo da câmera'))
+    }
+    const cleanup = () => {
+      window.clearTimeout(timeout)
+      video.removeEventListener('loadeddata', onReady)
+      video.removeEventListener('loadedmetadata', onReady)
+      video.removeEventListener('error', onError)
+    }
+    video.addEventListener('loadeddata', onReady)
+    video.addEventListener('loadedmetadata', onReady)
+    video.addEventListener('error', onError)
+  })
+}
+
 export function ScannerCamera({
   disabled = false,
   identifying = false,
@@ -117,74 +170,122 @@ export function ScannerCamera({
   const streamRef = useRef<MediaStream | null>(null)
   const cameraGenRef = useRef(0)
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
+  const [restartKey, setRestartKey] = useState(0)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [ready, setReady] = useState(false)
 
-  const stopCamera = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop())
-    streamRef.current = null
-    if (videoRef.current) videoRef.current.srcObject = null
-    setReady(false)
+  const restartCamera = useCallback(() => {
+    setRestartKey((key) => key + 1)
   }, [])
 
-  const startCamera = useCallback(async () => {
+  useEffect(() => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError(
         'Este navegador não permite acesso à câmera. Use a opção de enviar foto.',
       )
+      setStarting(false)
+      setReady(false)
       return
     }
 
     const gen = ++cameraGenRef.current
-    setStarting(true)
-    setCameraError(null)
-    stopCamera()
+    let cancelled = false
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-      })
-      if (gen !== cameraGenRef.current) {
-        stream.getTracks().forEach((track) => track.stop())
-        return
-      }
-      streamRef.current = stream
+    const detachVideo = () => {
       const video = videoRef.current
-      if (video) {
-        video.srcObject = stream
-        await video.play()
-        if (gen !== cameraGenRef.current) return
-        setReady(true)
-      }
-    } catch (err) {
-      if (gen !== cameraGenRef.current) return
+      if (video) video.srcObject = null
+    }
+
+    const stopActiveStream = () => {
+      releaseMediaStream(streamRef.current)
+      streamRef.current = null
+      detachVideo()
+    }
+
+    async function openCamera() {
+      setStarting(true)
+      setCameraError(null)
       setReady(false)
-      const message = err instanceof Error ? err.message : ''
-      // Ignora corrida play()/load ao reiniciar câmera
+      stopActiveStream()
+
+      // Strict Mode (mount→unmount→mount) e reload: libera o device antes de pedir de novo
+      await sleep(120)
+      if (cancelled || gen !== cameraGenRef.current) return
+
+      let lastError: unknown = null
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (cancelled || gen !== cameraGenRef.current) return
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              facingMode: { ideal: facingMode },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+          })
+          if (cancelled || gen !== cameraGenRef.current) {
+            releaseMediaStream(stream)
+            return
+          }
+
+          const video = videoRef.current
+          if (!video) {
+            releaseMediaStream(stream)
+            throw new Error('Elemento de vídeo indisponível')
+          }
+
+          streamRef.current = stream
+          video.srcObject = stream
+          await waitForVideoReady(video)
+          if (cancelled || gen !== cameraGenRef.current) return
+
+          try {
+            await video.play()
+          } catch (playErr) {
+            // play() pode falhar em corrida de remount; se já há frames, segue
+            if (!video.videoWidth) throw playErr
+          }
+
+          if (cancelled || gen !== cameraGenRef.current) return
+          setReady(true)
+          setStarting(false)
+          return
+        } catch (err) {
+          lastError = err
+          stopActiveStream()
+          if (isCameraBusyError(err) && attempt < 3) {
+            await sleep(250 * (attempt + 1))
+            continue
+          }
+          break
+        }
+      }
+
+      if (cancelled || gen !== cameraGenRef.current) return
+      setReady(false)
+      setStarting(false)
+      const message = lastError instanceof Error ? lastError.message : ''
       if (/interrupted by a new load request/i.test(message)) {
         setCameraError(null)
-      } else {
-        setCameraError(
-          err instanceof Error
-            ? `Não foi possível abrir a câmera: ${err.message}`
-            : 'Não foi possível abrir a câmera.',
-        )
+        return
       }
-    } finally {
-      if (gen === cameraGenRef.current) setStarting(false)
+      setCameraError(
+        lastError instanceof Error
+          ? `Não foi possível abrir a câmera: ${lastError.message}`
+          : 'Não foi possível abrir a câmera.',
+      )
     }
-  }, [facingMode, stopCamera])
 
-  useEffect(() => {
-    void startCamera()
-    return () => stopCamera()
-  }, [startCamera, stopCamera])
+    void openCamera()
+
+    return () => {
+      cancelled = true
+      cameraGenRef.current += 1
+      stopActiveStream()
+    }
+  }, [facingMode, restartKey])
 
   function handleIdentify() {
     const video = videoRef.current
@@ -202,6 +303,7 @@ export function ScannerCamera({
       fullCanvas: canvas,
       frame,
       previewUrl: canvas.toDataURL('image/jpeg', 0.85),
+      source: 'camera',
     })
   }
 
@@ -227,6 +329,7 @@ export function ScannerCamera({
         fullCanvas: canvas,
         frame: detected ?? computeCardFrame(canvas.width, canvas.height),
         previewUrl: canvas.toDataURL('image/jpeg', 0.85),
+        source: 'photo',
       })
       URL.revokeObjectURL(url)
     }
@@ -252,12 +355,21 @@ export function ScannerCamera({
             ref={guideRef}
             className="relative aspect-[59/86] w-[78%] max-w-sm rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
           >
-            {/* Regiões = mesmas proporções do OCR (moldura = fonte da verdade) */}
-            <div className="absolute top-[4%] left-[5%] h-[6.5%] w-[82%] rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20" />
-            <div className="absolute top-[4%] right-[2%] h-[6.5%] w-[11%] rounded-md border border-dashed border-white/25 bg-white/5" />
-            <div className="absolute top-[54.8%] left-[58%] h-[2.8%] w-[34%] rounded-md border border-dashed border-amber-300/95 bg-amber-400/25" />
+            {/* Mesmas proporções de YGO_REGION_RATIOS (OCR + overlay) */}
+            <div
+              className="absolute rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20"
+              style={regionRatioToStyle(YGO_REGION_RATIOS.name)}
+            />
+            <div
+              className="absolute rounded-md border border-dashed border-white/25 bg-white/5"
+              style={regionRatioToStyle(YGO_REGION_RATIOS.typeIcon)}
+            />
+            <div
+              className="absolute rounded-md border border-dashed border-amber-300/95 bg-amber-400/25"
+              style={regionRatioToStyle(YGO_REGION_RATIOS.setCode)}
+            />
             <p className="absolute -bottom-8 left-0 right-0 text-center text-[11px] text-white/90">
-              Verde = nome · âmbar = set code · OCR usa esta moldura
+              Verde = nome · âmbar = set code · calibrado na carta real
             </p>
           </div>
         </div>
@@ -301,7 +413,7 @@ export function ScannerCamera({
         <button
           type="button"
           disabled={starting || identifying}
-          onClick={() => void startCamera()}
+          onClick={restartCamera}
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] px-3 py-3 text-sm text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] disabled:opacity-50"
           title="Reiniciar câmera"
         >

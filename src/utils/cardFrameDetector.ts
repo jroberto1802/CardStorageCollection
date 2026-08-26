@@ -3,49 +3,67 @@ import type { CardFrameRect } from '@/services/cardScannerService'
 /** Proporção oficial carta YGO (largura / altura). */
 export const YGO_CARD_RATIO = 59 / 86
 
-export interface CardTextRegions {
-  /** Moldura completa da carta */
-  frame: CardFrameRect
-  /** Faixa do nome (esquerda, sem ícone de tipo) */
-  name: CardFrameRect
-  /** Set code abaixo da arte, lado direito (ex.: ROTD-EN068) */
-  setCode: CardFrameRect
-}
-
-/** Proporções relativas à moldura da carta (layout TCG Series 8+).
- * Calibrado com The Winged Dragon of Ra (LDK2-ENS03).
- */
-export const YGO_REGION_RATIOS = {
-  /** Caixa do nome só (sem estrelas). Quase até o ícone de atributo. */
-  name: { x: 0.05, y: 0.04, w: 0.82, h: 0.065 },
-  /** Ícone atributo/tipo — canto superior direito */
-  typeIcon: { right: 0.02, y: 0.04, w: 0.11, h: 0.065 },
-  /**
-   * Set code logo abaixo do canto inferior direito do quadro da arte.
-   * Medido: LDK2-ENS03 em y≈54.8–57%, x≈58–89%.
-   */
-  setCode: { x: 0.58, y: 0.548, w: 0.34, h: 0.028 },
-} as const
-
-/**
- * Bandas candidatas do set code (OCR tenta todas e fica com a melhor).
- */
-export const SET_CODE_BAND_RATIOS: ReadonlyArray<{
+export interface RegionRatio {
   x: number
   y: number
   w: number
   h: number
-}> = [
-  { x: 0.58, y: 0.548, w: 0.34, h: 0.028 }, // Ra / monstro (medido)
-  { x: 0.56, y: 0.555, w: 0.36, h: 0.03 },
-  { x: 0.55, y: 0.562, w: 0.37, h: 0.03 }, // Spell/Trap
-  { x: 0.58, y: 0.54, w: 0.34, h: 0.032 },
+}
+
+export interface CardTextRegions {
+  /** Moldura completa da carta */
+  frame: CardFrameRect
+  /** Faixa do nome (esquerda, sem ícone de atributo/tipo) */
+  name: CardFrameRect
+  /** Set code abaixo da arte, lado direito (ex.: LDK2-ENS03) */
+  setCode: CardFrameRect
+}
+
+/**
+ * Proporções relativas à moldura da carta (0–1).
+ *
+ * Fonte da verdade — medidas em carta real pixel a pixel:
+ * The Winged Dragon of Ra / LDK2-ENS03
+ * Artefato: `src/assets/ygo-region-calibration.png`
+ *
+ * NAME:     x 5.0%–83.5% · y 4.8% · h 5.8%  (para antes do ícone em ~84.5%)
+ * ICON:     x 84.5%–96.5% · y 4.8% · h 5.8%
+ * SET CODE: x 60.0%–92.0% · y 71.8% · h 3.8%
+ *
+ * Nota: a arte desta carta termina ~65–68%; o set code NÃO fica a ~55%
+ * (isso era ruído escuro dentro da ilustração). Faixa baixa/fina para
+ * evitar a barra da arte e a linha da caixa de efeito.
+ */
+export const YGO_REGION_RATIOS = {
+  name: { x: 0.05, y: 0.048, w: 0.785, h: 0.058 } satisfies RegionRatio,
+  typeIcon: { x: 0.845, y: 0.048, w: 0.12, h: 0.058 } satisfies RegionRatio,
+  setCode: { x: 0.6, y: 0.718, w: 0.32, h: 0.038 } satisfies RegionRatio,
+} as const
+
+/** Bandas OCR do set code (principal = medida; extras = variação Spell/Trap). */
+export const SET_CODE_BAND_RATIOS: ReadonlyArray<RegionRatio> = [
+  { x: 0.6, y: 0.718, w: 0.32, h: 0.038 },
+  { x: 0.585, y: 0.712, w: 0.34, h: 0.042 },
+  { x: 0.57, y: 0.722, w: 0.35, h: 0.036 },
+  { x: 0.61, y: 0.71, w: 0.31, h: 0.045 },
 ]
 
-function regionFromRatios(
-  frame: CardFrameRect,
-  r: { x: number; y: number; w: number; h: number },
-): CardFrameRect {
+/** Converte ratio 0–1 em estilo CSS % para o overlay da câmera. */
+export function regionRatioToStyle(r: RegionRatio): {
+  left: string
+  top: string
+  width: string
+  height: string
+} {
+  return {
+    left: `${r.x * 100}%`,
+    top: `${r.y * 100}%`,
+    width: `${r.w * 100}%`,
+    height: `${r.h * 100}%`,
+  }
+}
+
+function regionFromRatios(frame: CardFrameRect, r: RegionRatio): CardFrameRect {
   return {
     x: frame.x + Math.round(frame.width * r.x),
     y: frame.y + Math.round(frame.height * r.y),
@@ -56,8 +74,7 @@ function regionFromRatios(
 
 /**
  * Regiões de texto no layout TCG padrão.
- * Nome: estreito à esquerda (sem padding até o ícone).
- * Set code: faixa fina sob a arte, à direita.
+ * Overlay da câmera e crop do OCR usam exactamente estes ratios.
  */
 export function getYgoTextRegions(frame: CardFrameRect): CardTextRegions {
   return {
@@ -107,16 +124,35 @@ export function isPlausibleCardFrame(
 ): boolean {
   if (frame.width < 40 || frame.height < 60) return false
   const areaRatio = (frame.width * frame.height) / (canvasW * canvasH)
-  if (areaRatio < 0.06 || areaRatio > 0.98) return false
+  // Aceita carta full-bleed (upload recortado = ~100% da imagem)
+  if (areaRatio < 0.06 || areaRatio > 1.001) return false
   const ratio = frame.width / frame.height
-  return Math.abs(ratio - YGO_CARD_RATIO) / YGO_CARD_RATIO < 0.18
+  return Math.abs(ratio - YGO_CARD_RATIO) / YGO_CARD_RATIO < 0.2
+}
+
+/**
+ * Se a imagem já tem proporção de carta YGO, usa o canvas inteiro como moldura.
+ * Essencial no upload de scans/fotos recortadas (sem margem).
+ */
+export function detectFullBleedCardFrame(
+  canvas: HTMLCanvasElement,
+): CardFrameRect | null {
+  const { width, height } = canvas
+  if (width < 40 || height < 60) return null
+  const ratio = width / height
+  if (Math.abs(ratio - YGO_CARD_RATIO) / YGO_CARD_RATIO > 0.12) return null
+  return { x: 0, y: 0, width, height }
 }
 
 /**
  * Detecta a carta na imagem (auto-enquadramento).
- * Funciona melhor com fundo escuro ou contraste claro ao redor.
+ * Funciona com fundo contrastante OU carta preenchendo a imagem (full-bleed).
  */
 export function detectCardFrame(canvas: HTMLCanvasElement): CardFrameRect | null {
+  // Scan/foto já recortada na proporção da carta → moldura = imagem inteira
+  const fullBleed = detectFullBleedCardFrame(canvas)
+  if (fullBleed) return fullBleed
+
   const maxW = 360
   const scale = Math.min(1, maxW / canvas.width)
   const sw = Math.max(1, Math.round(canvas.width * scale))
@@ -130,13 +166,26 @@ export function detectCardFrame(canvas: HTMLCanvasElement): CardFrameRect | null
   ctx.drawImage(canvas, 0, 0, sw, sh)
   const { data } = ctx.getImageData(0, 0, sw, sh)
 
+  // Amostra cantos para limiar adaptativo (fundo vs carta)
+  const corner = (x: number, y: number) => {
+    const i = (y * sw + x) * 4
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+  }
+  const bgGuess =
+    (corner(2, 2) +
+      corner(sw - 3, 2) +
+      corner(2, sh - 3) +
+      corner(sw - 3, sh - 3)) /
+    4
+  const threshold = Math.min(90, Math.max(28, bgGuess + 18))
+
   const mask = new Uint8Array(sw * sh)
   for (let i = 0, p = 0; i < data.length; i += 4, p++) {
     const r = data[i]
     const g = data[i + 1]
     const b = data[i + 2]
     const lum = 0.299 * r + 0.587 * g + 0.114 * b
-    mask[p] = lum > 42 ? 1 : 0
+    mask[p] = lum > threshold ? 1 : 0
   }
 
   let minX = sw
@@ -181,16 +230,29 @@ function frameIoU(a: CardFrameRect, b: CardFrameRect): number {
   return union > 0 ? inter / union : 0
 }
 
+export type CardCaptureSource = 'camera' | 'photo'
+
 /**
- * Usa a moldura da UI (o que o usuário vê) como fonte da verdade.
- * Auto-detect só entra se estiver bem alinhado à moldura (IoU alto),
- * senão o OCR fica desalinhado do overlay verde/âmbar.
+ * Resolve a moldura usada no OCR.
+ * - camera: prioriza a moldura visível na UI
+ * - photo: prioriza auto-detect / full-bleed (upload não tem guia alinhado)
  */
 export function resolveCardFrame(
   canvas: HTMLCanvasElement,
   manualFrame: CardFrameRect,
+  source: CardCaptureSource = 'camera',
 ): { frame: CardFrameRect; autoDetected: boolean } {
   const auto = detectCardFrame(canvas)
+
+  if (source === 'photo') {
+    if (auto && isPlausibleCardFrame(auto, canvas.width, canvas.height)) {
+      return { frame: auto, autoDetected: true }
+    }
+    const fullBleed = detectFullBleedCardFrame(canvas)
+    if (fullBleed) return { frame: fullBleed, autoDetected: true }
+    return { frame: manualFrame, autoDetected: false }
+  }
+
   if (
     auto &&
     isPlausibleCardFrame(auto, canvas.width, canvas.height) &&

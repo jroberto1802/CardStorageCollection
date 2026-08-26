@@ -35,6 +35,11 @@ function fixCommonOcrChars(value: string): string {
     .replace(/\brn/gi, 'm')
     .replace(/([A-Za-z])0([A-Za-z])/g, '$1O$2')
     .replace(/([A-Za-z])1([A-Za-z])/g, '$1I$2')
+    .replace(/\bTRBE\b/gi, 'THE')
+    .replace(/\bTBE\b/gi, 'THE')
+    .replace(/\bTHB\b/gi, 'THE')
+    .replace(/\bOE\b/gi, 'OF')
+    .replace(/\b0F\b/gi, 'OF')
 }
 
 /**
@@ -59,13 +64,14 @@ export function buildScannerQueryVariants(
 
   push(base)
 
-  // Correção 1: troca OCR comum (0/O, 1/I, |/I, rn/m)
+  // Correção 1: foil dourado + OCR comum (TRBE→THE, OE→OF, …)
   push(fixCommonOcrChars(base))
 
-  // Correção 2: 2 primeiras palavras (ou primeira se só 2)
-  const words = base.split(' ').filter(Boolean)
+  // Correção 2: 2 primeiras palavras (ou tokens significativos)
+  const words = fixCommonOcrChars(base).split(' ').filter(Boolean)
   if (words.length >= 3) {
-    push(words.slice(0, 2).join(' '))
+    push(words.slice(0, 3).join(' '))
+    push(words.slice(1).join(' ')) // sem o artigo inicial
   } else if (words.length === 2) {
     push(words[0])
   }

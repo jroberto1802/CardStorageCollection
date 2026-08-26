@@ -247,12 +247,14 @@ export function computeCardSearchRank(card: Card, query: string): number {
   const desc = (card.description ?? '').toLowerCase()
   const archetype = (card.archetype ?? '').toLowerCase()
   const sets = parseCardSets(card.card_sets)
+  const qCompact = q.replace(/\s+/g, '')
+  const nameCompact = name.replace(/\s+/g, '')
 
   if (sets.some((set) => set.set_code.toLowerCase() === q)) return 1
   if (sets.some((set) => set.set_code.toLowerCase().includes(q))) return 2
-  if (name === q) return 3
+  if (name === q || nameCompact === qCompact) return 3
   if (archetype === q) return 3
-  if (name.includes(q)) return 4
+  if (name.includes(q) || nameCompact.includes(qCompact)) return 4
   if (archetype.includes(q)) return 4
   if (desc.includes(q)) return 5
   return 99
@@ -461,6 +463,41 @@ export function looksLikeSetCode(query: string): boolean {
   return /^[A-Z0-9]{2,}[-_][A-Z0-9]+$/i.test(query.trim())
 }
 
+export interface ParsedYgoSetCode {
+  setId: string
+  lang: string
+  number: number
+  digits: number
+  raw: string
+}
+
+/** Ex.: FOTB-EN043 → { setId: FOTB, lang: EN, number: 43, digits: 3 } */
+export function parseYgoSetCode(raw: string): ParsedYgoSetCode | null {
+  const code = raw.trim().toUpperCase()
+  const match = code.match(/^([A-Z0-9]{2,8})-([A-Z]{0,3})(\d{1,4})$/)
+  if (!match) return null
+  const [, setId, lang, numStr] = match
+  return {
+    setId,
+    lang,
+    number: Number(numStr),
+    digits: numStr.length,
+    raw: code,
+  }
+}
+
+/** Gera set code vizinho (FOTB-EN043 + 1 → FOTB-EN044). */
+export function buildAdjacentSetCode(
+  setCode: string,
+  delta: number,
+): string | null {
+  const parsed = parseYgoSetCode(setCode)
+  if (!parsed) return null
+  const next = parsed.number + delta
+  if (next < 0) return null
+  return `${parsed.setId}-${parsed.lang}${String(next).padStart(parsed.digits, '0')}`
+}
+
 export function matchesCollectionSearch(
   item: CollectionItemWithCard,
   query: string,
@@ -546,7 +583,8 @@ export function resolveCardSet(
   const byCode = sets.filter(
     (set) => normalizeSetKey(set.set_code) === code,
   )
-  if (!byCode.length) return sets[0]
+  // Código pedido e não encontrado: não inventa outra impressão
+  if (!byCode.length) return null
 
   if (rarity && name) {
     const exact = byCode.find(

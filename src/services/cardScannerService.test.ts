@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractCardNameCandidates,
+  normalizeOcrCardName,
   normalizeSetCode,
   stripCardTypeFromName,
 } from '@/services/cardScannerService'
@@ -9,6 +10,11 @@ import {
   buildScannerQueryVariants,
   nameSimilarity,
 } from '@/utils/ocrSuggest'
+import {
+  detectFullBleedCardFrame,
+  isPlausibleCardFrame,
+  YGO_CARD_RATIO,
+} from '@/utils/cardFrameDetector'
 
 describe('stripCardTypeFromName', () => {
   it('keeps only the card name when TRAP is on the same line', () => {
@@ -46,26 +52,83 @@ describe('normalizeSetCode', () => {
     expect(normalizeSetCode('BLVO-EN0I8')).toBe('BLVO-EN018')
   })
 
+  it('fixes FN/F misreads as EN', () => {
+    expect(normalizeSetCode('KICO-FN065')).toBe('KICO-EN065')
+    expect(normalizeSetCode('KICO-F065')).toBe('KICO-EN065')
+    expect(normalizeSetCode('kico-en065')).toBe('KICO-EN065')
+  })
+
   it('rejects invalid strings', () => {
     expect(normalizeSetCode('ICE BARRIER')).toBeNull()
   })
 })
 
 describe('getYgoTextRegions', () => {
-  it('aligns name to name-box and set code under artwork (Ra / LDK2)', () => {
+  it('uses measured Ra/LDK2 ratios for name and set code', () => {
     const frame = { x: 0, y: 0, width: 590, height: 860 }
     const { name, setCode } = getYgoTextRegions(frame)
-    // Nome: caixa do título, quase até o ícone (sem estrelas)
+    // Nome: até antes do ícone (~84.5%)
     expect(name.x).toBe(Math.round(590 * 0.05))
-    expect(name.y).toBe(Math.round(860 * 0.04))
-    expect(name.width).toBe(Math.round(590 * 0.82))
-    expect(name.height).toBe(Math.round(860 * 0.065))
-    expect(name.x + name.width).toBeGreaterThan(frame.width * 0.85)
-    // Set code: sob o quadro da arte, direita (LDK2-ENS03)
-    expect(setCode.x).toBe(Math.round(590 * 0.58))
-    expect(setCode.y).toBe(Math.round(860 * 0.548))
-    expect(setCode.width).toBe(Math.round(590 * 0.34))
-    expect(setCode.height).toBe(Math.round(860 * 0.028))
+    expect(name.y).toBe(Math.round(860 * 0.048))
+    expect(name.width).toBe(Math.round(590 * 0.785))
+    expect(name.height).toBe(Math.round(860 * 0.058))
+    expect(name.x + name.width).toBeLessThanOrEqual(Math.round(590 * 0.845))
+    // Set code: faixa baixa/fina (entre arte e caixa de efeito)
+    expect(setCode.x).toBe(Math.round(590 * 0.6))
+    expect(setCode.y).toBe(Math.round(860 * 0.718))
+    expect(setCode.width).toBe(Math.round(590 * 0.32))
+    expect(setCode.height).toBe(Math.round(860 * 0.038))
+    expect(setCode.y / frame.height).toBeCloseTo(0.718, 2)
+  })
+})
+
+describe('full-bleed photo framing', () => {
+  it('accepts a frame that fills the entire image', () => {
+    const w = 303
+    const h = 438
+    const frame = { x: 0, y: 0, width: w, height: h }
+    expect(isPlausibleCardFrame(frame, w, h)).toBe(true)
+  })
+
+  it('detects card-shaped uploads as full-bleed', () => {
+    const w = 590
+    const h = Math.round(w / YGO_CARD_RATIO)
+    // jsdom may not have canvas — simulate via plain object path
+    const canvas = {
+      width: w,
+      height: h,
+    } as HTMLCanvasElement
+    const frame = detectFullBleedCardFrame(canvas)
+    expect(frame).toEqual({ x: 0, y: 0, width: w, height: h })
+  })
+
+  it('rejects non-card aspect as full-bleed', () => {
+    const canvas = { width: 1920, height: 1080 } as HTMLCanvasElement
+    expect(detectFullBleedCardFrame(canvas)).toBeNull()
+  })
+})
+
+describe('normalizeOcrCardName', () => {
+  it('removes duplicated glued names and restores spaces', () => {
+    expect(
+      normalizeOcrCardName('THEWINGEDDRAGONOFRA THEWINGEDDRAGONOFRA'),
+    ).toBe('THE WINGED DRAGON OF RA')
+  })
+
+  it('restores spaces in a single glued name', () => {
+    expect(normalizeOcrCardName('THEWINGEDDRAGONOFRA')).toBe(
+      'THE WINGED DRAGON OF RA',
+    )
+  })
+
+  it('fixes gold-foil OCR typos TRBE/OE', () => {
+    expect(normalizeOcrCardName('TRBE WINGED DRAGON OE RA')).toBe(
+      'THE WINGED DRAGON OF RA',
+    )
+  })
+
+  it('keeps already spaced names', () => {
+    expect(normalizeOcrCardName('Ice Barrier')).toBe('Ice Barrier')
   })
 })
 

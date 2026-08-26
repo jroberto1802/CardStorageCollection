@@ -4,15 +4,18 @@ import {
   type AppLanguage,
   type Card,
   type CardImpression,
+  type CardSet,
   type CatalogFilters,
   type SortOption,
 } from '@/types'
 import {
+  buildAdjacentSetCode,
   cardToCatalogItem,
   looksLikeSetCode,
   matchesCardFilters,
   normalizeQuery,
   parseCardSets,
+  parseYgoSetCode,
   sortImpressions,
 } from '@/utils/cardHelpers'
 
@@ -120,7 +123,33 @@ async function fetchByExactSetCode(
     }),
   )
 
-  return mergeCards(results)
+  let cards = mergeCards(results)
+
+  // Fallback: busca textual no JSON (cs às vezes falha conforme o tipo da coluna)
+  if (cards.length === 0) {
+    try {
+      const needle = safe.replace(/[%_]/g, '')
+      const { data, error } = await supabase
+        .from('cards')
+        .select('*')
+        .eq('language', language)
+        .filter('card_sets::text', 'ilike', `%${needle}%`)
+        .limit(80)
+
+      if (!error && data) {
+        cards = (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+      }
+    } catch (err) {
+      console.warn('fetchByExactSetCode text fallback failed:', err)
+    }
+  }
+
+  const needle = safe.toLowerCase()
+  return cards.filter((card) =>
+    parseCardSets(card.card_sets).some(
+      (set) => set.set_code.toLowerCase() === needle,
+    ),
+  )
 }
 
 async function fetchBySetCodePartial(
@@ -263,6 +292,37 @@ async function fetchCardsByIds(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
 }
 
+async function fetchByNameCompact(
+  language: AppLanguage,
+  query: string,
+): Promise<Card[]> {
+  const compact = query.replace(/\s+/g, '').trim()
+  if (compact.length < 5) return []
+
+  // Busca parcial pelo maior token (≥4 letras) e filtra no cliente sem espaços
+  const token =
+    compact.match(/[A-Za-zÀ-ÿ]{4,}/)?.[0] ??
+    compact.slice(0, Math.min(12, compact.length))
+  if (token.length < 4) return []
+
+  const { data, error } = await supabase
+    .from('cards')
+    .select('*')
+    .eq('language', language)
+    .ilike('name', `%${token}%`)
+    .limit(FETCH_LIMIT)
+
+  if (error) throw new Error(error.message)
+
+  const needle = compact.toLowerCase()
+  return (data ?? [])
+    .map((row) => mapRow(row as Record<string, unknown>))
+    .filter((card) => {
+      const nameCompact = card.name.replace(/\s+/g, '').toLowerCase()
+      return nameCompact.includes(needle) || needle.includes(nameCompact)
+    })
+}
+
 async function searchCardsInLanguage(
   language: AppLanguage,
   query: string,
@@ -275,6 +335,13 @@ async function searchCardsInLanguage(
     fetchByDescription(language, query),
     fetchByArchetype(language, query),
   ]
+
+  // OCR às vezes cola o nome sem espaços (THEWINGEDDRAGONOFRA)
+  if (!/\s/.test(query) && query.replace(/[^A-Za-zÀ-ÿ]/g, '').length >= 8) {
+    tasks.push(fetchByNameCompact(language, query))
+  } else if (query.replace(/\s+/g, '').length >= 8) {
+    tasks.push(fetchByNameCompact(language, query))
+  }
 
   const safeSetCode = sanitizeSetCode(query)
   if (safeSetCode && (looksLikeSetCode(query) || query.includes('-') || query.includes('_'))) {
@@ -459,16 +526,85 @@ export async function getCardById(
   if (error) throw new Error(error.message)
   if (data) return mapRow(data as Record<string, unknown>)
 
-  if (fallbackToEn && language === 'pt') {
-    const { data: enData, error: enError } = await supabase
-      .from('cards')
-      .select('*')
-      .eq('id', cardId)
-      .eq('language', 'en')
-      .maybeSingle()
+  if (fallbackToEn && language !== 'en') {
+    return getCardById(cardId, 'en', { fallbackToEn: false })
+  }
+  return null
+}
 
-    if (enError) throw new Error(enError.message)
-    if (enData) return mapRow(enData as Record<string, unknown>)
+/**
+ * Localiza carta + impressão pelo set code exato (ex.: FOTB-EN043).
+ * Tenta o idioma pedido e, se vazio, o outro.
+ */
+export async function findCardByExactSetCode(
+  setCode: string,
+  language: AppLanguage,
+  options?: { excludeCardId?: number },
+): Promise<{ card: Card; matchedSet: CardSet } | null> {
+  const safe = sanitizeSetCode(setCode)
+  if (!safe) return null
+
+  const languages: AppLanguage[] =
+    language === 'pt' ? ['pt', 'en'] : ['en', 'pt']
+  const needle = safe.toLowerCase()
+
+  for (const lang of languages) {
+    const cards = await fetchByExactSetCode(lang, safe)
+    for (const card of cards) {
+      if (
+        options?.excludeCardId != null &&
+        card.id === options.excludeCardId
+      ) {
+        continue
+      }
+      const matchedSet = parseCardSets(card.card_sets).find(
+        (set) => set.set_code.toLowerCase() === needle,
+      )
+      if (matchedSet) return { card, matchedSet }
+    }
+  }
+  return null
+}
+
+/**
+ * Carta vizinha no mesmo set pelo número do set code
+ * (FOTB-EN043 → next FOTB-EN044 / prev FOTB-EN042).
+ * Só aceita vizinho com o mesmo prefixo de série (ex.: LEDD-ENA08 → LEDD-ENA09).
+ */
+export async function findNeighborCardBySetCode(params: {
+  setCode: string
+  direction: 'prev' | 'next'
+  language: AppLanguage
+  maxSkip?: number
+  excludeCardId?: number
+}): Promise<{ card: Card; matchedSet: CardSet; setCode: string } | null> {
+  const parsed = parseYgoSetCode(params.setCode)
+  if (!parsed) return null
+
+  const maxSkip = params.maxSkip ?? 1
+  const step = params.direction === 'next' ? 1 : -1
+
+  for (let i = 1; i <= maxSkip; i++) {
+    const code = buildAdjacentSetCode(params.setCode, step * i)
+    if (!code) return null
+
+    const nextParsed = parseYgoSetCode(code)
+    if (
+      !nextParsed ||
+      nextParsed.setId !== parsed.setId ||
+      nextParsed.lang !== parsed.lang
+    ) {
+      continue
+    }
+
+    const hit = await findCardByExactSetCode(code, params.language, {
+      excludeCardId: params.excludeCardId,
+    })
+    if (!hit) continue
+
+    if (hit.matchedSet.set_code.toUpperCase() !== code.toUpperCase()) continue
+
+    return { ...hit, setCode: hit.matchedSet.set_code }
   }
 
   return null

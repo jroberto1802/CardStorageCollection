@@ -101,7 +101,11 @@ export function CardScannerPage() {
 
     try {
       setFeedback('Auto-enquadrando e lendo nome + set code (PT + EN)...')
-      const result = await identifyCardFromFrame(frame.fullCanvas, frame.frame)
+      const result = await identifyCardFromFrame(
+        frame.fullCanvas,
+        frame.frame,
+        frame.source ?? 'camera',
+      )
 
       setOcrText(result.text.trim())
       setCandidates(result.candidates)
@@ -124,7 +128,11 @@ export function CardScannerPage() {
       }
 
       setQuery(searchByName || best)
-      setFeedback('Buscando 3 sugestões (original + autocorreções)...')
+      setFeedback(
+        searchBySet
+          ? `Buscando com set code ${searchBySet} + nome...`
+          : 'Buscando 3 sugestões (original + autocorreções)...',
+      )
 
       const items = await runSuggest({
         ocrName: searchByName || best,
@@ -134,8 +142,16 @@ export function CardScannerPage() {
 
       if (items.length > 0) {
         setLocked(true)
+        const setHit = searchBySet
+          ? items.some((s) =>
+              s.item.setCode.replace(/[^a-z0-9-]/gi, '').toUpperCase() ===
+              searchBySet.replace(/[^a-z0-9-]/gi, '').toUpperCase(),
+            )
+          : false
         setFeedback(
-          `${items.length} sugestão(ões)${result.autoDetected ? ' · auto-enquadrado' : ''}. Escolha a carta ou escaneie outra.`,
+          `${items.length} sugestão(ões)${result.autoDetected ? ' · auto-enquadrado' : ''}${
+            setHit ? ` · impressão ${searchBySet}` : searchBySet ? ` · set ${searchBySet}` : ''
+          }. Escolha a carta ou escaneie outra.`,
         )
       } else {
         setFeedback(
@@ -422,7 +438,7 @@ export function CardScannerPage() {
             <div className="border-b border-[var(--color-border)] px-4 py-3">
               <h3 className="text-sm font-semibold">3 sugestões (corretor)</h3>
               <p className="text-xs text-[var(--color-muted)]">
-                Original + autocorreções · PT/EN · escolha a carta correta
+                Set code tem prioridade · depois nome + autocorreções · PT/EN
               </p>
             </div>
 

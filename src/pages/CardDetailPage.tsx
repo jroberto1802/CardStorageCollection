@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   BookmarkPlus,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Eye,
   Loader2,
   Minus,
@@ -12,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
+  findNeighborCardBySetCode,
   getAvailableCardLanguages,
   getCardById,
 } from '@/services/catalogService'
@@ -39,8 +42,17 @@ import {
   parseBanlistInfo,
   parseCardSets,
   parseSetPriceUsd,
+  parseYgoSetCode,
   resolveCardSet,
 } from '@/utils/cardHelpers'
+
+type SetNeighbor = {
+  cardId: number
+  language: AppLanguage
+  setCode: string
+  setRarity: string
+  setName: string
+}
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   if (value === null || value === undefined || value === '') return null
@@ -73,6 +85,9 @@ export function CardDetailPage() {
   const [collectionMessage, setCollectionMessage] = useState<string | null>(null)
   const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
   const [usdBrlRate, setUsdBrlRate] = useState<number | null>(null)
+  const [prevNeighbor, setPrevNeighbor] = useState<SetNeighbor | null>(null)
+  const [nextNeighbor, setNextNeighbor] = useState<SetNeighbor | null>(null)
+  const [neighborLoading, setNeighborLoading] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -176,6 +191,14 @@ export function CardDetailPage() {
     if (!selectedSetCode) {
       next.set('set', selectedSet.set_code)
       changed = true
+    }
+
+    // Só completa rarity/name se o set da URL é o mesmo resolvido
+    if (
+      selectedSetCode &&
+      selectedSet.set_code.toLowerCase() !== selectedSetCode.toLowerCase()
+    ) {
+      return
     }
 
     if (
@@ -461,13 +484,120 @@ export function CardDetailPage() {
     return sameCode.length > 1 ? sameCode : []
   }, [sets, selectedSet])
 
-  if (loading) {
+  const canNavigateSet = Boolean(
+    selectedSet?.set_code && parseYgoSetCode(selectedSet.set_code),
+  )
+
+  useEffect(() => {
+    let mounted = true
+    const code = selectedSet?.set_code ?? ''
+
+    if (!code || !parseYgoSetCode(code)) {
+      setPrevNeighbor(null)
+      setNextNeighbor(null)
+      setNeighborLoading(false)
+      return
+    }
+
+    setNeighborLoading(true)
+    const currentId = Number(cardId)
+    void Promise.all([
+      findNeighborCardBySetCode({
+        setCode: code,
+        direction: 'prev',
+        language,
+        maxSkip: 1,
+        excludeCardId: Number.isFinite(currentId) ? currentId : undefined,
+      }),
+      findNeighborCardBySetCode({
+        setCode: code,
+        direction: 'next',
+        language,
+        maxSkip: 1,
+        excludeCardId: Number.isFinite(currentId) ? currentId : undefined,
+      }),
+    ])
+      .then(([prev, next]) => {
+        if (!mounted) return
+        setPrevNeighbor(
+          prev
+            ? {
+                cardId: prev.card.id,
+                language: prev.card.language,
+                setCode: prev.setCode,
+                setRarity: prev.matchedSet.set_rarity || '',
+                setName: prev.matchedSet.set_name,
+              }
+            : null,
+        )
+        setNextNeighbor(
+          next
+            ? {
+                cardId: next.card.id,
+                language: next.card.language,
+                setCode: next.setCode,
+                setRarity: next.matchedSet.set_rarity || '',
+                setName: next.matchedSet.set_name,
+              }
+            : null,
+        )
+      })
+      .catch(() => {
+        if (!mounted) return
+        setPrevNeighbor(null)
+        setNextNeighbor(null)
+      })
+      .finally(() => {
+        if (mounted) setNeighborLoading(false)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [selectedSet?.set_code, language, cardId])
+
+  function goToSetNeighbor(neighbor: SetNeighbor) {
+    navigate(
+      buildCardDetailPath(neighbor.cardId, {
+        lang: neighbor.language,
+        setCode: neighbor.setCode,
+        setRarity: neighbor.setRarity,
+        setName: neighbor.setName,
+      }),
+    )
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      if (event.key === 'ArrowLeft' && prevNeighbor) {
+        event.preventDefault()
+        goToSetNeighbor(prevNeighbor)
+      } else if (event.key === 'ArrowRight' && nextNeighbor) {
+        event.preventDefault()
+        goToSetNeighbor(nextNeighbor)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [prevNeighbor, nextNeighbor])
+
+  if (loading && !card) {
     return (
       <div className="text-sm text-[var(--color-muted)]">Carregando detalhes da carta...</div>
     )
   }
 
-  if (error || !card) {
+  if ((error || !card) && !loading) {
     return (
       <div className="space-y-4">
         <button
@@ -486,7 +616,15 @@ export function CardDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="relative space-y-6">
+      {loading && card && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-2">
+          <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1 text-xs text-[var(--color-muted)] shadow">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Carregando impressão...
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
@@ -503,7 +641,7 @@ export function CardDetailPage() {
 
       <div className="grid gap-8 lg:grid-cols-[280px_1fr]">
         <div className="space-y-4">
-          <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl shadow-black/30">
+          <div className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl shadow-black/30">
             {images.full ? (
               <img
                 src={images.full}
@@ -515,7 +653,64 @@ export function CardDetailPage() {
                 Sem imagem
               </div>
             )}
+
+            {!neighborLoading && prevNeighbor && (
+              <button
+                type="button"
+                aria-label={`Impressão anterior (${prevNeighbor.setCode})`}
+                title={prevNeighbor.setCode}
+                onClick={() => goToSetNeighbor(prevNeighbor)}
+                className="absolute top-1/2 left-2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg backdrop-blur-sm transition hover:bg-black/75"
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+            )}
+            {!neighborLoading && nextNeighbor && (
+              <button
+                type="button"
+                aria-label={`Próxima impressão (${nextNeighbor.setCode})`}
+                title={nextNeighbor.setCode}
+                onClick={() => goToSetNeighbor(nextNeighbor)}
+                className="absolute top-1/2 right-2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white shadow-lg backdrop-blur-sm transition hover:bg-black/75"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            )}
           </div>
+
+          {canNavigateSet &&
+            !neighborLoading &&
+            (prevNeighbor || nextNeighbor) && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/70 px-3 py-2">
+              {prevNeighbor ? (
+                <button
+                  type="button"
+                  onClick={() => goToSetNeighbor(prevNeighbor)}
+                  className="inline-flex min-w-0 flex-1 items-center gap-1 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+                >
+                  <ChevronLeft className="h-4 w-4 shrink-0" />
+                  <span className="truncate font-mono">{prevNeighbor.setCode}</span>
+                </button>
+              ) : (
+                <span className="min-w-0 flex-1" />
+              )}
+              <span className="shrink-0 font-mono text-xs font-semibold text-[var(--color-accent)]">
+                {selectedSet?.set_code}
+              </span>
+              {nextNeighbor ? (
+                <button
+                  type="button"
+                  onClick={() => goToSetNeighbor(nextNeighbor)}
+                  className="inline-flex min-w-0 flex-1 items-center justify-end gap-1 rounded-lg px-2 py-1.5 text-right text-xs text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+                >
+                  <span className="truncate font-mono">{nextNeighbor.setCode}</span>
+                  <ChevronRight className="h-4 w-4 shrink-0" />
+                </button>
+              ) : (
+                <span className="min-w-0 flex-1" />
+              )}
+            </div>
+          )}
 
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium">
@@ -532,14 +727,35 @@ export function CardDetailPage() {
                   const options = impressionOptionsForItem(item)
                   const currentKey = `${item.set_code}||${item.set_rarity || ''}||${item.set_name}`
                   const canFixRarity = options.length > 1
+                  const matchesSelectedSet =
+                    Boolean(selectedSet) &&
+                    item.set_code.toLowerCase() ===
+                      selectedSet!.set_code.toLowerCase()
                   return (
                     <div
                       key={item.id}
-                      className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60 p-4"
+                      className={[
+                        'rounded-2xl border p-4 transition',
+                        matchesSelectedSet
+                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/15 ring-2 ring-[var(--color-accent)]/45 shadow-[0_0_24px_-8px_var(--color-accent)]'
+                          : 'border-[var(--color-border)] bg-[var(--color-surface)]/60',
+                      ].join(' ')}
                     >
+                      {matchesSelectedSet ? (
+                        <p className="mb-2 text-[10px] font-semibold tracking-wide text-[var(--color-accent)] uppercase">
+                          Impressão selecionada · na coleção
+                        </p>
+                      ) : null}
                       <p className="text-xs text-[var(--color-muted)]">
                         Impressão:{' '}
-                        <span className="font-mono text-[var(--color-text)]">
+                        <span
+                          className={[
+                            'font-mono',
+                            matchesSelectedSet
+                              ? 'font-semibold text-[var(--color-accent)]'
+                              : 'text-[var(--color-text)]',
+                          ].join(' ')}
+                        >
                           {item.set_code}
                         </span>
                         {item.set_rarity ? ` · ${item.set_rarity}` : ''}
@@ -619,10 +835,13 @@ export function CardDetailPage() {
                 })}
 
                 {selectedSet && !selectedOwnedItem && (
-                  <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60 p-4">
+                  <div className="rounded-2xl border border-[var(--color-accent)] bg-[var(--color-accent)]/15 p-4 ring-2 ring-[var(--color-accent)]/45 shadow-[0_0_24px_-8px_var(--color-accent)]">
+                    <p className="mb-2 text-[10px] font-semibold tracking-wide text-[var(--color-accent)] uppercase">
+                      Impressão selecionada · ainda não na coleção
+                    </p>
                     <p className="text-xs text-[var(--color-muted)]">
                       Impressão selecionada:{' '}
-                      <span className="font-mono text-[var(--color-text)]">
+                      <span className="font-mono font-semibold text-[var(--color-accent)]">
                         {selectedSet.set_code}
                       </span>
                       {selectedSet.set_rarity ? ` · ${selectedSet.set_rarity}` : ''}
