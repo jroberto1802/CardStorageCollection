@@ -1,5 +1,5 @@
 import { createWorker, PSM, type Worker } from 'tesseract.js'
-import { searchCatalogBothLanguages } from '@/services/catalogService'
+import { searchCatalogBothLanguages, setCodeExistsInCatalog } from '@/services/catalogService'
 import type { CardImpression } from '@/types'
 import {
   getSetCodeBandCandidates,
@@ -17,8 +17,15 @@ import {
   suggestionLabel,
   type SuggestionLabel,
 } from '@/utils/ocrSuggest'
+import {
+  extractSetCodes,
+  generateSetCodeCandidates,
+  normalizeSetCode,
+} from '@/utils/setCodeOcr'
 
 export type CardFrameRect = { x: number; y: number; width: number; height: number }
+
+export { extractSetCodes, normalizeSetCode } from '@/utils/setCodeOcr'
 
 export const SCANNER_BURST_COUNT = 3
 export const SCANNER_BURST_INTERVAL_MS = 90
@@ -237,62 +244,24 @@ export function fixGoldFoilOcrTypos(value: string): string {
     .replace(/\bWINGEO\b/gi, 'WINGED')
 }
 
-const SET_CODE_RE = /\b([A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4})\b/gi
+async function resolveSetCodeWithCatalog(raw: string): Promise<string | null> {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
 
-/** Correções típicas de OCR em set codes (E↔F, língua, zeros). */
-export function fixSetCodeOcrTypos(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9-\s]/g, ' ')
-    .replace(/\s+/g, '')
-    // KICO-FN065 → KICO-EN065 (E lido como F)
-    .replace(/-FN(\d)/g, '-EN$1')
-    .replace(/-FM(\d)/g, '-EN$1')
-    .replace(/-EM(\d)/g, '-EN$1')
-    .replace(/-EH(\d)/g, '-EN$1')
-    .replace(/-EU(\d)/g, '-EN$1')
-    // PT/EN truncados
-    .replace(/-F(\d)/g, '-EN$1')
-    .replace(/-E(\d)/g, '-EN$1')
-    .replace(/-P(\d)/g, '-PT$1')
-    // S no meio do número (5)
-    .replace(/([A-Z]{2})S(\d{2})$/g, '$15$2')
-    .replace(/([A-Z]{2})(\d)S(\d)$/g, '$1$25$3')
-}
+  const candidates = [
+    ...new Set(
+      [
+        normalizeSetCode(trimmed),
+        ...generateSetCodeCandidates(trimmed),
+      ].filter((code): code is string => Boolean(code)),
+    ),
+  ]
 
-/** Normaliza e corrige OCR comum em set codes YGO. */
-export function normalizeSetCode(raw: string): string | null {
-  const code = fixSetCodeOcrTypos(raw)
-
-  const parts = code.match(/^([A-Z0-9]{2,5})-([A-Z]{0,3})(.+)$/)
-  if (!parts) return null
-
-  const [, setId, langPart, rest] = parts
-  let lang = langPart
-  let num = rest.replace(/[OIL]/g, (c) => (c === 'O' ? '0' : '1'))
-
-  // ENO68 → EN + 068 (O do meio era zero do número)
-  if (lang.length >= 2 && /[OIL]$/.test(lang)) {
-    const last = lang.at(-1)!
-    lang = lang.slice(0, -1)
-    num = (last === 'O' ? '0' : '1') + num
+  for (const code of candidates) {
+    if (await setCodeExistsInCatalog(code)) return code
   }
 
-  // FN065 já tratado em fixSetCodeOcrTypos; reforço se sobrou F*
-  if (lang === 'FN' || lang === 'FM' || lang === 'F') lang = 'EN'
-  if (lang === 'P') lang = 'PT'
-
-  const normalized = `${setId}-${lang}${num}`
-  const match = normalized.match(/^([A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4})$/)
-  return match ? match[1] : null
-}
-
-export function extractSetCodes(ocrText: string): string[] {
-  const found = ocrText.toUpperCase().match(SET_CODE_RE) ?? []
-  const normalized = found
-    .map((s) => normalizeSetCode(s))
-    .filter((s): s is string => Boolean(s))
-  return [...new Set(normalized)]
+  return normalizeSetCode(trimmed) ?? candidates[0] ?? null
 }
 
 export function extractCardNameCandidates(ocrText: string, limit = 6): string[] {
@@ -702,11 +671,13 @@ async function recognizeSetCode(
     const result = await worker.recognize(image)
     const text = result.data.text ?? ''
     const confidence = Number(result.data.confidence ?? 0)
-    const code =
-      normalizeSetCode(text) ?? extractSetCodes(text)[0] ?? null
+    const code = await resolveSetCodeWithCatalog(text)
     const score = (code ? 1000 : 0) + confidence + (text.trim() ? 5 : 0)
     const bestCode =
-      normalizeSetCode(best.text) ?? extractSetCodes(best.text)[0] ?? null
+      (await resolveSetCodeWithCatalog(best.text)) ??
+      normalizeSetCode(best.text) ??
+      extractSetCodes(best.text)[0] ??
+      null
     const bestScore =
       (bestCode ? 1000 : 0) + best.confidence + (best.text.trim() ? 5 : 0)
     if (score > bestScore) best = { text, confidence }
@@ -761,7 +732,10 @@ async function recognizeSetCodeFromFrame(
       const previewUrl = prepared.toDataURL('image/jpeg', 0.92)
       const result = await recognizeSetCode(prepared)
       const code =
-        normalizeSetCode(result.text) ?? extractSetCodes(result.text)[0] ?? null
+        (await resolveSetCodeWithCatalog(result.text)) ??
+        normalizeSetCode(result.text) ??
+        extractSetCodes(result.text)[0] ??
+        null
       const score = scoreSetCodeAttempt({
         code,
         text: result.text,

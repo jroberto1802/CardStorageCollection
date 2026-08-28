@@ -152,6 +152,18 @@ async function fetchByExactSetCode(
   )
 }
 
+/** Verifica se o set code existe no catálogo (EN ou PT). */
+export async function setCodeExistsInCatalog(setCode: string): Promise<boolean> {
+  const safe = sanitizeSetCode(setCode)
+  if (!safe) return false
+
+  const [en, pt] = await Promise.all([
+    fetchByExactSetCode('en', safe),
+    fetchByExactSetCode('pt', safe),
+  ])
+  return en.length > 0 || pt.length > 0
+}
+
 async function fetchBySetCodePartial(
   language: AppLanguage,
   setCodeQuery: string,
