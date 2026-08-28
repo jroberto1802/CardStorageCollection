@@ -9,12 +9,14 @@
 5. Cole o conteúdo de `migrations/004_card_images_storage.sql` e execute (bucket **card-images** + leitura pública)
 6. Cole o conteúdo de `migrations/005_mdm_deck_sync.sql` e execute (decks sincronizados MDM + progresso retomável)
 7. Cole o conteúdo de `migrations/006_deck_side_zone.sql` e execute (zona **side** em `deck_cards`)
+8. Cole o conteúdo de `migrations/007_scanner_fuzzy_search.sql` e execute (busca fuzzy **pg_trgm** para o scanner)
 
 A migration `002` cria a tabela `collection_items` (inventário por impressão: card + set_code + raridade) com RLS por usuário.
 A migration `003` cria `decks` e `deck_cards` (construção de deck; 1 linha = 1 cópia).
 A migration `004` cria o bucket `card-images` no Storage (miniaturas do catálogo + full sob demanda).
 A migration `005` cria `synced_decks`, `synced_deck_cards` e `deck_sync_runs` (top decks Master Duel Meta).
 A migration `006` amplia `deck_cards.zone` para incluir `side` (Side Deck até 15).
+A migration `007` adiciona `name_compact`, índices **pg_trgm** e a função `search_cards_fuzzy` (busca tolerante a erros de OCR no scanner).
 
 ## 2. Deploy das Edge Functions
 

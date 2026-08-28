@@ -9,6 +9,9 @@ import {
   type CardTextRegions,
 } from '@/utils/cardFrameDetector'
 import {
+  preparePerspectiveCanvas,
+} from '@/utils/cardPerspective'
+import {
   buildScannerQueryVariants,
   nameSimilarity,
   suggestionLabel,
@@ -16,6 +19,9 @@ import {
 } from '@/utils/ocrSuggest'
 
 export type CardFrameRect = { x: number; y: number; width: number; height: number }
+
+export const SCANNER_BURST_COUNT = 3
+export const SCANNER_BURST_INTERVAL_MS = 90
 
 export type { CardTextRegions }
 
@@ -35,6 +41,13 @@ async function getOcrWorker(): Promise<Worker> {
     })()
   }
   return workerPromise
+}
+
+/** Pré-carrega modelos PT+EN em background (chamar ao abrir a página do scanner). */
+export function preloadOcrWorker(): void {
+  void getOcrWorker().catch(() => {
+    // Falha silenciosa — identify mostrará erro se necessário
+  })
 }
 
 export async function terminateOcrWorker(): Promise<void> {
@@ -799,43 +812,26 @@ function scoreOcrResult(text: string, confidence: number): number {
   return confidence + bestLen * 3 + names.length * 8 + extractSetCodes(text).length * 12
 }
 
-export interface IdentifyResult {
+async function recognizeNameFromFrame(
+  ocrCanvas: HTMLCanvasElement,
+  frame: CardFrameRect,
+): Promise<{
   text: string
   confidence: number
   candidates: string[]
-  setCodes: string[]
-  /** Set code lido na região dedicada (ex.: BLVO-EN068) */
-  detectedSetCode: string | null
-  autoDetected: boolean
-  regions: CardTextRegions
   nameBandPreviewUrl: string
-  setCodePreviewUrl: string
-}
-
-/**
- * Auto-enquadra (se possível), lê nome + set code em regiões fixas do layout YGO.
- */
-export async function identifyCardFromFrame(
-  fullCanvas: HTMLCanvasElement,
-  manualFrame: CardFrameRect,
-  source: CardCaptureSource = 'camera',
-): Promise<IdentifyResult> {
-  const { frame, autoDetected } = resolveCardFrame(fullCanvas, manualFrame, source)
-  const regions = getYgoTextRegions(frame)
-
-  const nameBand = cropNameBandFromFrame(fullCanvas, frame)
-  // Dois pré-processamentos: foil dourado + cinza clássico
+  merged: string
+}> {
+  const nameBand = cropNameBandFromFrame(ocrCanvas, frame)
   const preparedGold = preprocessNameForOcr(nameBand)
   const preparedGray = preprocessForOcr(nameBand)
 
-  const [lineGold, blockGold, lineGray, blockGray, setCodeHit] =
-    await Promise.all([
-      recognizeOnce(preparedGold, PSM.SINGLE_LINE),
-      recognizeOnce(preparedGold, PSM.SINGLE_BLOCK),
-      recognizeOnce(preparedGray, PSM.SINGLE_LINE),
-      recognizeOnce(preparedGray, PSM.SINGLE_BLOCK),
-      recognizeSetCodeFromFrame(fullCanvas, frame),
-    ])
+  const [lineGold, blockGold, lineGray, blockGray] = await Promise.all([
+    recognizeOnce(preparedGold, PSM.SINGLE_LINE),
+    recognizeOnce(preparedGold, PSM.SINGLE_BLOCK),
+    recognizeOnce(preparedGray, PSM.SINGLE_LINE),
+    recognizeOnce(preparedGray, PSM.SINGLE_BLOCK),
+  ])
 
   const namePasses = [
     { ...lineGold, preview: preparedGold },
@@ -846,6 +842,7 @@ export async function identifyCardFromFrame(
     (a, b) =>
       scoreOcrResult(b.text, b.confidence) - scoreOcrResult(a.text, a.confidence),
   )
+
   const best = namePasses[0] ?? {
     text: '',
     confidence: 0,
@@ -853,18 +850,7 @@ export async function identifyCardFromFrame(
   }
   const merged = namePasses.map((p) => p.text).join('\n')
   const cleanedBest = normalizeOcrCardName(best.text.trim() || merged.trim())
-  const candidates = extractCardNameCandidates(
-    `${cleanedBest}\n${merged}`,
-    8,
-  )
-  const nameBandPreviewUrl = best.preview.toDataURL('image/jpeg', 0.85)
-
-  const setFromName = extractSetCodes(merged)
-  const setFromRegion = setCodeHit.code
-  const allSetCodes = [
-    ...(setFromRegion ? [setFromRegion] : []),
-    ...setFromName.filter((c) => c !== setFromRegion),
-  ]
+  const candidates = extractCardNameCandidates(`${cleanedBest}\n${merged}`, 8)
 
   return {
     text: cleanedBest || candidates[0] || best.text.trim() || merged.trim(),
@@ -875,11 +861,141 @@ export async function identifyCardFromFrame(
         : cleanedBest
           ? [cleanedBest]
           : [],
+    nameBandPreviewUrl: best.preview.toDataURL('image/jpeg', 0.85),
+    merged,
+  }
+}
+
+export interface IdentifyResult {
+  text: string
+  confidence: number
+  candidates: string[]
+  setCodes: string[]
+  /** Set code lido na região dedicada (ex.: BLVO-EN068) */
+  detectedSetCode: string | null
+  autoDetected: boolean
+  /** Carta retificada por perspectiva antes do OCR */
+  perspectiveCorrected: boolean
+  regions: CardTextRegions
+  nameBandPreviewUrl: string
+  setCodePreviewUrl: string
+}
+
+export interface ScannerFrameInput {
+  fullCanvas: HTMLCanvasElement
+  manualFrame: CardFrameRect
+  source?: CardCaptureSource
+}
+
+/** Pontua resultado para escolher o melhor frame do burst. */
+export function scoreIdentifyResult(result: IdentifyResult): number {
+  let score = 0
+  if (result.detectedSetCode) score += 2500
+  score += result.setCodes.length * 200
+  score += result.confidence
+  score += result.candidates.length * 12
+  if (result.text.trim()) score += 30
+  if (result.perspectiveCorrected) score += 5
+  return score
+}
+
+/**
+ * Processa vários frames (burst) e retorna o de maior confiança.
+ * Interrompe cedo quando um set code válido é lido.
+ */
+export async function identifyCardFromFrames(
+  frames: ScannerFrameInput[],
+): Promise<IdentifyResult> {
+  if (frames.length === 0) {
+    throw new Error('Nenhum frame para identificar')
+  }
+
+  if (frames.length === 1) {
+    const only = frames[0]
+    return identifyCardFromFrame(
+      only.fullCanvas,
+      only.manualFrame,
+      only.source,
+    )
+  }
+
+  let best: IdentifyResult | null = null
+  let bestScore = Number.NEGATIVE_INFINITY
+
+  for (const input of frames) {
+    const result = await identifyCardFromFrame(
+      input.fullCanvas,
+      input.manualFrame,
+      input.source,
+    )
+    const score = scoreIdentifyResult(result)
+    if (score > bestScore) {
+      bestScore = score
+      best = result
+    }
+    if (result.detectedSetCode) break
+  }
+
+  if (best) return best
+
+  const fallback = frames[0]
+  return identifyCardFromFrame(
+    fallback.fullCanvas,
+    fallback.manualFrame,
+    fallback.source,
+  )
+}
+
+/**
+ * Auto-enquadra (se possível), deskew, lê set code primeiro e nome só se necessário.
+ */
+export async function identifyCardFromFrame(
+  fullCanvas: HTMLCanvasElement,
+  manualFrame: CardFrameRect,
+  source: CardCaptureSource = 'camera',
+): Promise<IdentifyResult> {
+  const { frame, autoDetected } = resolveCardFrame(fullCanvas, manualFrame, source)
+  const {
+    canvas: ocrCanvas,
+    frame: ocrFrame,
+    perspectiveCorrected,
+  } = preparePerspectiveCanvas(fullCanvas, frame)
+  const regions = getYgoTextRegions(ocrFrame)
+
+  const setCodeHit = await recognizeSetCodeFromFrame(ocrCanvas, ocrFrame)
+  const setFromRegion = setCodeHit.code
+
+  if (setFromRegion) {
+    return {
+      text: '',
+      confidence: 0,
+      candidates: [],
+      setCodes: [setFromRegion],
+      detectedSetCode: setFromRegion,
+      autoDetected,
+      perspectiveCorrected,
+      regions,
+      nameBandPreviewUrl: '',
+      setCodePreviewUrl: setCodeHit.previewUrl,
+    }
+  }
+
+  const nameResult = await recognizeNameFromFrame(ocrCanvas, ocrFrame)
+  const setFromName = extractSetCodes(nameResult.merged)
+  const allSetCodes = [
+    ...setFromName,
+  ]
+
+  return {
+    text: nameResult.text,
+    confidence: nameResult.confidence,
+    candidates: nameResult.candidates,
     setCodes: allSetCodes,
-    detectedSetCode: setFromRegion,
+    detectedSetCode: null,
     autoDetected,
+    perspectiveCorrected,
     regions,
-    nameBandPreviewUrl,
+    nameBandPreviewUrl: nameResult.nameBandPreviewUrl,
     setCodePreviewUrl: setCodeHit.previewUrl,
   }
 }

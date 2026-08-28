@@ -14,9 +14,12 @@ import {
   type CapturedFrame,
 } from '@/components/scanner/ScannerCamera'
 import {
-  identifyCardFromFrame,
+  identifyCardFromFrames,
+  preloadOcrWorker,
+  SCANNER_BURST_COUNT,
   suggestScannerMatches,
   terminateOcrWorker,
+  type ScannerFrameInput,
   type ScannerSuggestion,
 } from '@/services/cardScannerService'
 import type { AppLanguage } from '@/types'
@@ -36,6 +39,8 @@ export function CardScannerPage() {
   const [nameBandPreview, setNameBandPreview] = useState<string | null>(null)
   const [setCodePreview, setSetCodePreview] = useState<string | null>(null)
   const [autoDetected, setAutoDetected] = useState(false)
+  const [perspectiveCorrected, setPerspectiveCorrected] = useState(false)
+  const [burstCount, setBurstCount] = useState(0)
   const [detectedSetCode, setDetectedSetCode] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [preset, setPreset] = useState<{
@@ -49,6 +54,7 @@ export function CardScannerPage() {
   const busyRef = useRef(false)
 
   useEffect(() => {
+    preloadOcrWorker()
     return () => {
       void terminateOcrWorker()
     }
@@ -97,22 +103,35 @@ export function CardScannerPage() {
     setNameBandPreview(null)
     setSetCodePreview(null)
     setAutoDetected(false)
+    setPerspectiveCorrected(false)
+    setBurstCount(0)
     setDetectedSetCode(null)
 
     try {
-      setFeedback('Auto-enquadrando e lendo nome + set code (PT + EN)...')
-      const result = await identifyCardFromFrame(
-        frame.fullCanvas,
-        frame.frame,
-        frame.source ?? 'camera',
+      const frames: ScannerFrameInput[] = (
+        frame.burstFrames ?? [frame]
+      ).map((item) => ({
+        fullCanvas: item.fullCanvas,
+        manualFrame: item.frame,
+        source: item.source ?? frame.source ?? 'camera',
+      }))
+
+      setBurstCount(frames.length)
+      setFeedback(
+        frames.length > 1
+          ? `Capturando ${frames.length} fotos · set code primeiro · deskew...`
+          : 'Lendo set code primeiro · deskew se necessário...',
       )
+
+      const result = await identifyCardFromFrames(frames)
 
       setOcrText(result.text.trim())
       setCandidates(result.candidates)
       setSetCodes(result.setCodes)
-      setNameBandPreview(result.nameBandPreviewUrl)
+      setNameBandPreview(result.nameBandPreviewUrl || null)
       setSetCodePreview(result.setCodePreviewUrl)
       setAutoDetected(result.autoDetected)
+      setPerspectiveCorrected(result.perspectiveCorrected)
       setDetectedSetCode(result.detectedSetCode)
 
       const searchByName =
@@ -130,8 +149,8 @@ export function CardScannerPage() {
       setQuery(searchByName || best)
       setFeedback(
         searchBySet
-          ? `Buscando com set code ${searchBySet} + nome...`
-          : 'Buscando 3 sugestões (original + autocorreções)...',
+          ? `Set code ${searchBySet} · buscando impressão...`
+          : 'Set code não lido · buscando por nome + autocorreções...',
       )
 
       const items = await runSuggest({
@@ -149,7 +168,11 @@ export function CardScannerPage() {
             )
           : false
         setFeedback(
-          `${items.length} sugestão(ões)${result.autoDetected ? ' · auto-enquadrado' : ''}${
+          `${items.length} sugestão(ões)${
+            burstCount > 1 ? ` · ${burstCount} fotos` : ''
+          }${result.autoDetected ? ' · auto-enquadrado' : ''}${
+            result.perspectiveCorrected ? ' · perspectiva corrigida' : ''
+          }${
             setHit ? ` · impressão ${searchBySet}` : searchBySet ? ` · set ${searchBySet}` : ''
           }. Escolha a carta ou escaneie outra.`,
         )
@@ -184,6 +207,8 @@ export function CardScannerPage() {
     setNameBandPreview(null)
     setSetCodePreview(null)
     setAutoDetected(false)
+    setPerspectiveCorrected(false)
+    setBurstCount(0)
     setDetectedSetCode(null)
     setFeedback('Pronto para escanear outra carta.')
     setError(null)
@@ -213,7 +238,7 @@ export function CardScannerPage() {
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
             Nova abordagem: enquadre a carta e toque em <strong className="text-[var(--color-text)]">Identificar</strong>.
-            Auto-enquadra quando possível, lê o nome e o set code (faixa âmbar). OCR em português + inglês.
+            Captura {SCANNER_BURST_COUNT} fotos em sequência, corrige perspectiva, lê o set code primeiro e só então o nome.
           </p>
         </div>
         <Link
@@ -276,8 +301,18 @@ export function CardScannerPage() {
             </p>
           )}
 
-          {(autoDetected || detectedSetCode) && (
+          {(autoDetected || detectedSetCode || perspectiveCorrected || burstCount > 1) && (
             <div className="flex flex-wrap gap-2">
+              {burstCount > 1 && (
+                <span className="rounded-md border border-sky-400/40 bg-sky-400/10 px-2 py-1 text-[11px] text-sky-200">
+                  Burst: {burstCount} fotos
+                </span>
+              )}
+              {perspectiveCorrected && (
+                <span className="rounded-md border border-violet-400/40 bg-violet-400/10 px-2 py-1 text-[11px] text-violet-200">
+                  Perspectiva corrigida
+                </span>
+              )}
               {autoDetected && (
                 <span className="rounded-md border border-emerald-400/40 bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-300">
                   Carta auto-enquadrada

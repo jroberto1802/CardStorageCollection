@@ -205,6 +205,34 @@ async function fetchByNamePartial(
   return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
 }
 
+/** Busca fuzzy via RPC pg_trgm (scanner / OCR com erros de leitura). */
+async function fetchByNameFuzzy(
+  language: AppLanguage,
+  query: string,
+): Promise<Card[]> {
+  const trimmed = query.trim()
+  if (trimmed.length < 2) return []
+
+  try {
+    const { data, error } = await supabase.rpc('search_cards_fuzzy', {
+      p_language: language,
+      p_query: trimmed,
+      p_limit: FETCH_LIMIT,
+    })
+
+    if (error) {
+      console.warn('fetchByNameFuzzy:', error.message)
+      return []
+    }
+
+    const rows = (data ?? []) as Record<string, unknown>[]
+    return rows.map((row: Record<string, unknown>) => mapRow(row))
+  } catch (err) {
+    console.warn('fetchByNameFuzzy failed:', err)
+    return []
+  }
+}
+
 async function fetchByDescription(
   language: AppLanguage,
   text: string,
@@ -335,6 +363,11 @@ async function searchCardsInLanguage(
     fetchByDescription(language, query),
     fetchByArchetype(language, query),
   ]
+
+  // Fuzzy pg_trgm: nomes com typo OCR ou sem espaços (não para set codes)
+  if (query.length >= 3 && !looksLikeSetCode(query)) {
+    tasks.push(fetchByNameFuzzy(language, query))
+  }
 
   // OCR às vezes cola o nome sem espaços (THEWINGEDDRAGONOFRA)
   if (!/\s/.test(query) && query.replace(/[^A-Za-zÀ-ÿ]/g, '').length >= 8) {

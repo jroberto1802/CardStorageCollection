@@ -5,6 +5,15 @@ import {
   regionRatioToStyle,
   YGO_REGION_RATIOS,
 } from '@/utils/cardFrameDetector'
+import {
+  blurWarningMessage,
+  isImageSharpEnough,
+  measureSharpness,
+} from '@/utils/imageSharpness'
+import {
+  SCANNER_BURST_COUNT,
+  SCANNER_BURST_INTERVAL_MS,
+} from '@/services/cardScannerService'
 
 export interface CardFrameRect {
   x: number
@@ -20,6 +29,8 @@ export interface CapturedFrame {
   previewUrl: string
   /** camera = guia na tela · photo = upload (prioriza auto-enquadramento) */
   source?: 'camera' | 'photo'
+  /** Burst da câmera (ordenado por nitidez, inclui o frame principal) */
+  burstFrames?: CapturedFrame[]
 }
 
 interface ScannerCameraProps {
@@ -132,6 +143,24 @@ function isCameraBusyError(err: unknown): boolean {
   )
 }
 
+async function applyContinuousFocus(stream: MediaStream): Promise<void> {
+  const track = stream.getVideoTracks()[0]
+  if (!track?.applyConstraints) return
+
+  try {
+    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
+      focusMode?: string[]
+    }
+    if (caps?.focusMode?.includes('continuous')) {
+      await track.applyConstraints({
+        focusMode: 'continuous',
+      } as MediaTrackConstraints)
+    }
+  } catch {
+    // Dispositivo pode não suportar focusMode — segue sem
+  }
+}
+
 async function waitForVideoReady(video: HTMLVideoElement): Promise<void> {
   if (video.readyState >= 2 && video.videoWidth > 0) return
   await new Promise<void>((resolve, reject) => {
@@ -172,6 +201,7 @@ export function ScannerCamera({
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
   const [restartKey, setRestartKey] = useState(0)
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [captureWarning, setCaptureWarning] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [ready, setReady] = useState(false)
 
@@ -221,8 +251,8 @@ export function ScannerCamera({
             audio: false,
             video: {
               facingMode: { ideal: facingMode },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
+              width: { ideal: 1920, min: 1280 },
+              height: { ideal: 1080, min: 720 },
             },
           })
           if (cancelled || gen !== cameraGenRef.current) {
@@ -238,6 +268,7 @@ export function ScannerCamera({
 
           streamRef.current = stream
           video.srcObject = stream
+          await applyContinuousFocus(stream)
           await waitForVideoReady(video)
           if (cancelled || gen !== cameraGenRef.current) return
 
@@ -287,23 +318,52 @@ export function ScannerCamera({
     }
   }, [facingMode, restartKey])
 
-  function handleIdentify() {
+  async function handleIdentify() {
     const video = videoRef.current
     const guide = guideRef.current
     if (!video || !ready) return
 
-    const canvas = captureVideoCanvas(video)
-    if (!canvas) return
+    setCaptureWarning(null)
 
-    const frame =
-      (guide ? mapGuideElementToVideoPixels(video, guide) : null) ??
-      computeCardFrame(canvas.width, canvas.height)
+    const burst: CapturedFrame[] = []
+
+    for (let i = 0; i < SCANNER_BURST_COUNT; i++) {
+      const canvas = captureVideoCanvas(video)
+      if (!canvas) continue
+
+      const frame =
+        (guide ? mapGuideElementToVideoPixels(video, guide) : null) ??
+        computeCardFrame(canvas.width, canvas.height)
+
+      if (!isImageSharpEnough(canvas, frame, 'camera')) continue
+
+      burst.push({
+        fullCanvas: canvas,
+        frame,
+        previewUrl: canvas.toDataURL('image/jpeg', 0.85),
+        source: 'camera',
+      })
+
+      if (i < SCANNER_BURST_COUNT - 1) {
+        await sleep(SCANNER_BURST_INTERVAL_MS)
+      }
+    }
+
+    if (burst.length === 0) {
+      setCaptureWarning(blurWarningMessage('camera'))
+      return
+    }
+
+    const ranked = [...burst].sort(
+      (a, b) =>
+        measureSharpness(b.fullCanvas, b.frame) -
+        measureSharpness(a.fullCanvas, a.frame),
+    )
+    const best = ranked[0]
 
     onIdentify({
-      fullCanvas: canvas,
-      frame,
-      previewUrl: canvas.toDataURL('image/jpeg', 0.85),
-      source: 'camera',
+      ...best,
+      burstFrames: ranked,
     })
   }
 
@@ -325,9 +385,19 @@ export function ScannerCamera({
       }
       ctx.drawImage(img, 0, 0)
       const detected = detectCardFrame(canvas)
+      const frame =
+        detected ?? computeCardFrame(canvas.width, canvas.height)
+
+      setCaptureWarning(null)
+      if (!isImageSharpEnough(canvas, frame, 'photo')) {
+        setCaptureWarning(blurWarningMessage('photo'))
+        URL.revokeObjectURL(url)
+        return
+      }
+
       onIdentify({
         fullCanvas: canvas,
-        frame: detected ?? computeCardFrame(canvas.width, canvas.height),
+        frame,
         previewUrl: canvas.toDataURL('image/jpeg', 0.85),
         source: 'photo',
       })
@@ -387,6 +457,12 @@ export function ScannerCamera({
         </p>
       )}
 
+      {captureWarning && (
+        <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+          {captureWarning}
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
@@ -395,7 +471,7 @@ export function ScannerCamera({
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Camera className="h-4 w-4" />
-          {identifying ? 'Identificando...' : 'Identificar carta'}
+          {identifying ? 'Identificando...' : `Identificar carta (${SCANNER_BURST_COUNT} fotos)`}
         </button>
 
         <button

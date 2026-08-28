@@ -12,6 +12,7 @@ import type {
   MonsterTypeFilter,
   SortOption,
 } from '@/types'
+import { nameSimilarity } from '@/utils/ocrSuggest'
 
 export function normalizeQuery(value: string): string {
   return value.trim().replace(/\s+/g, ' ')
@@ -257,6 +258,11 @@ export function computeCardSearchRank(card: Card, query: string): number {
   if (name.includes(q) || nameCompact.includes(qCompact)) return 4
   if (archetype.includes(q)) return 4
   if (desc.includes(q)) return 5
+
+  const sim = nameSimilarity(card.name, query)
+  if (sim >= 0.72) return 4
+  if (sim >= 0.55) return 5
+
   return 99
 }
 
