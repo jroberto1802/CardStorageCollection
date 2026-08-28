@@ -284,7 +284,18 @@ export interface PerspectivePrepareResult {
 export function preparePerspectiveCanvas(
   fullCanvas: HTMLCanvasElement,
   frame: CardFrameRect,
+  options?: { allowWarp?: boolean },
 ): PerspectivePrepareResult {
+  const allowWarp = options?.allowWarp ?? true
+
+  if (!allowWarp) {
+    return {
+      canvas: fullCanvas,
+      frame,
+      perspectiveCorrected: false,
+    }
+  }
+
   const corners = detectCardCorners(fullCanvas, frame)
   if (corners && isQuadSkewed(corners)) {
     const warped = warpCardToCanonical(fullCanvas, corners)

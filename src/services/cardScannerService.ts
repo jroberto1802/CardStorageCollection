@@ -959,7 +959,9 @@ export async function identifyCardFromFrame(
     canvas: ocrCanvas,
     frame: ocrFrame,
     perspectiveCorrected,
-  } = preparePerspectiveCanvas(fullCanvas, frame)
+  } = preparePerspectiveCanvas(fullCanvas, frame, {
+    allowWarp: source !== 'camera',
+  })
   const regions = getYgoTextRegions(ocrFrame)
 
   const setCodeHit = await recognizeSetCodeFromFrame(ocrCanvas, ocrFrame)
