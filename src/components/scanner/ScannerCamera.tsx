@@ -7,8 +7,10 @@ import {
 } from '@/utils/cardFrameDetector'
 import {
   blurWarningMessage,
-  isImageSharpEnough,
+  extremeBlurWarningMessage,
+  isExtremelyBlurry,
   measureSharpness,
+  shouldWarnBlur,
 } from '@/utils/imageSharpness'
 import {
   SCANNER_BURST_COUNT,
@@ -335,8 +337,6 @@ export function ScannerCamera({
         (guide ? mapGuideElementToVideoPixels(video, guide) : null) ??
         computeCardFrame(canvas.width, canvas.height)
 
-      if (!isImageSharpEnough(canvas, frame, 'camera')) continue
-
       burst.push({
         fullCanvas: canvas,
         frame,
@@ -350,7 +350,9 @@ export function ScannerCamera({
     }
 
     if (burst.length === 0) {
-      setCaptureWarning(blurWarningMessage('camera'))
+      setCaptureWarning(
+        'Não foi possível capturar a imagem. Aguarde a câmera carregar e tente de novo.',
+      )
       return
     }
 
@@ -360,6 +362,15 @@ export function ScannerCamera({
         measureSharpness(a.fullCanvas, a.frame),
     )
     const best = ranked[0]
+
+    if (isExtremelyBlurry(best.fullCanvas, best.frame)) {
+      setCaptureWarning(extremeBlurWarningMessage('camera'))
+      return
+    }
+
+    if (shouldWarnBlur(best.fullCanvas, best.frame, 'camera')) {
+      setCaptureWarning(blurWarningMessage('camera'))
+    }
 
     onIdentify({
       ...best,
@@ -389,10 +400,15 @@ export function ScannerCamera({
         detected ?? computeCardFrame(canvas.width, canvas.height)
 
       setCaptureWarning(null)
-      if (!isImageSharpEnough(canvas, frame, 'photo')) {
-        setCaptureWarning(blurWarningMessage('photo'))
+
+      if (isExtremelyBlurry(canvas, frame)) {
+        setCaptureWarning(extremeBlurWarningMessage('photo'))
         URL.revokeObjectURL(url)
         return
+      }
+
+      if (shouldWarnBlur(canvas, frame, 'photo')) {
+        setCaptureWarning(blurWarningMessage('photo'))
       }
 
       onIdentify({

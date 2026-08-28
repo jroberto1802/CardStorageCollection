@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   measureSharpnessFromImageData,
-  SHARPNESS_MIN_CAMERA,
+  SHARPNESS_EXTREME_BLUR,
+  SHARPNESS_WARN_CAMERA,
 } from '@/utils/imageSharpness'
 
 function fillGray(
@@ -40,7 +41,7 @@ describe('measureSharpnessFromImageData', () => {
   it('returns low score for uniform blur-like image', () => {
     const data = fillGray(200, 200, 136)
     expect(measureSharpnessFromImageData(data, 200, 200)).toBeLessThan(
-      SHARPNESS_MIN_CAMERA,
+      SHARPNESS_EXTREME_BLUR,
     )
   })
 
@@ -58,5 +59,14 @@ describe('measureSharpnessFromImageData', () => {
     expect(measureSharpnessFromImageData(sharp, 300, 200)).toBeGreaterThan(
       measureSharpnessFromImageData(flat, 300, 200),
     )
+  })
+})
+
+describe('blur thresholds', () => {
+  it('treats realistic card-like contrast as not extremely blurry', () => {
+    const data = fillWithEdgeBlock(320, 240, { x: 40, y: 90, w: 240, h: 40 })
+    const score = measureSharpnessFromImageData(data, 320, 240)
+    expect(score).toBeGreaterThan(SHARPNESS_EXTREME_BLUR)
+    expect(score).toBeLessThan(SHARPNESS_WARN_CAMERA * 4)
   })
 })
