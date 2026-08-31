@@ -1,6 +1,16 @@
 import { createWorker, PSM, type Worker } from 'tesseract.js'
-import { searchCatalogBothLanguages, setCodeExistsInCatalog } from '@/services/catalogService'
+import {
+  getCardsByIdsWithFallback,
+  searchCatalogBothLanguages,
+  setCodeExistsInCatalog,
+} from '@/services/catalogService'
+import { findVisualMatchesFromFrame } from '@/services/cardArtHashService'
 import type { CardImpression } from '@/types'
+import {
+  VISUAL_MATCH_STRONG_DISTANCE,
+  type VisualMatchCandidate,
+} from '@/utils/cardArtHash'
+import { cardToCatalogItem } from '@/utils/cardHelpers'
 import {
   getSetCodeBandCandidates,
   getYgoTextRegions,
@@ -14,7 +24,9 @@ import {
 import {
   buildScannerQueryVariants,
   nameSimilarity,
+  SET_CODE_SUGGESTION_LABEL,
   suggestionLabel,
+  VISUAL_SUGGESTION_LABEL,
   type SuggestionLabel,
 } from '@/utils/ocrSuggest'
 import {
@@ -853,6 +865,10 @@ export interface IdentifyResult {
   regions: CardTextRegions
   nameBandPreviewUrl: string
   setCodePreviewUrl: string
+  /** Candidatos por similaridade visual (pHash da arte) */
+  visualMatches: VisualMatchCandidate[]
+  artPHash: string | null
+  artPreviewUrl: string
 }
 
 export interface ScannerFrameInput {
@@ -870,6 +886,14 @@ export function scoreIdentifyResult(result: IdentifyResult): number {
   score += result.candidates.length * 12
   if (result.text.trim()) score += 30
   if (result.perspectiveCorrected) score += 5
+
+  const bestVisual = result.visualMatches[0]
+  if (bestVisual) {
+    if (bestVisual.distance <= VISUAL_MATCH_STRONG_DISTANCE) score += 2200
+    else if (bestVisual.distance <= 15) score += 1200
+    score += Math.max(0, 20 - bestVisual.distance) * 25
+  }
+
   return score
 }
 
@@ -937,6 +961,7 @@ export async function identifyCardFromFrame(
     allowWarp: source !== 'camera',
   })
   const regions = getYgoTextRegions(ocrFrame)
+  const visual = await findVisualMatchesFromFrame(ocrCanvas, ocrFrame)
 
   const setCodeHit = await recognizeSetCodeFromFrame(ocrCanvas, ocrFrame)
   const setFromRegion = setCodeHit.code
@@ -953,6 +978,9 @@ export async function identifyCardFromFrame(
       regions,
       nameBandPreviewUrl: '',
       setCodePreviewUrl: setCodeHit.previewUrl,
+      visualMatches: visual.visualMatches,
+      artPHash: visual.artPHash,
+      artPreviewUrl: visual.artPreviewUrl,
     }
   }
 
@@ -973,6 +1001,9 @@ export async function identifyCardFromFrame(
     regions,
     nameBandPreviewUrl: nameResult.nameBandPreviewUrl,
     setCodePreviewUrl: setCodeHit.previewUrl,
+    visualMatches: visual.visualMatches,
+    artPHash: visual.artPHash,
+    artPreviewUrl: visual.artPreviewUrl,
   }
 }
 
@@ -1032,6 +1063,7 @@ export async function suggestScannerMatches(params: {
   ocrName: string
   setCode?: string | null
   extraCandidates?: string[]
+  visualMatches?: VisualMatchCandidate[]
 }): Promise<ScannerSuggestion[]> {
   const ocrName = normalizeOcrCardName(params.ocrName)
   const detectedSetCode = params.setCode
@@ -1093,14 +1125,49 @@ export async function suggestScannerMatches(params: {
     if (best) {
       usedCardIds.add(best.cardId)
       suggestions.push({
-        label: suggestionLabel(0),
+        label: SET_CODE_SUGGESTION_LABEL,
         query: detectedSetCode,
         item: best,
       })
     }
   }
 
-  // 2) Variantes de nome (já com impressão do set code quando possível)
+  // 2) Match visual por pHash da arte (após set code, antes do nome)
+  if (params.visualMatches?.length) {
+    const distanceById = new Map(
+      params.visualMatches.map((match) => [match.cardId, match.distance]),
+    )
+    const visualIds = params.visualMatches
+      .map((match) => match.cardId)
+      .filter((id) => !usedCardIds.has(id))
+      .slice(0, 5)
+
+    if (visualIds.length > 0) {
+      const cards = await getCardsByIdsWithFallback('pt', visualIds)
+      const cardById = new Map(cards.map((card) => [card.id, card]))
+
+      for (const cardId of visualIds) {
+        if (suggestions.length >= 3) break
+        if (usedCardIds.has(cardId)) continue
+
+        const card = cardById.get(cardId)
+        if (!card) continue
+
+        const item = cardToCatalogItem(card, ocrName || card.name)
+        if (!item) continue
+
+        usedCardIds.add(cardId)
+        const distance = distanceById.get(cardId) ?? 0
+        suggestions.push({
+          label: VISUAL_SUGGESTION_LABEL,
+          query: `arte · ${distance} bits`,
+          item: withDetectedPrinting(item),
+        })
+      }
+    }
+  }
+
+  // 3) Variantes de nome (já com impressão do set code quando possível)
   for (let i = 0; i < namePools.length; i++) {
     if (suggestions.length >= 3) break
     const pool = namePools[i]
@@ -1122,7 +1189,7 @@ export async function suggestScannerMatches(params: {
     }
   }
 
-  // 3) Completar até 3 com o restante dos pools
+  // 4) Completar até 3 com o restante dos pools
   if (suggestions.length < 3) {
     const all = [
       ...setItems.map((item) => ({

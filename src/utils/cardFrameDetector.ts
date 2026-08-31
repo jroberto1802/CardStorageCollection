@@ -38,6 +38,8 @@ export const YGO_REGION_RATIOS = {
   name: { x: 0.05, y: 0.048, w: 0.785, h: 0.058 } satisfies RegionRatio,
   typeIcon: { x: 0.845, y: 0.048, w: 0.12, h: 0.058 } satisfies RegionRatio,
   setCode: { x: 0.6, y: 0.718, w: 0.32, h: 0.038 } satisfies RegionRatio,
+  /** Caixa de ilustração (monstro/magia/armadilha) */
+  art: { x: 0.08, y: 0.11, w: 0.84, h: 0.57 } satisfies RegionRatio,
 } as const
 
 /** Bandas OCR do set code (principal = medida; extras = variação Spell/Trap). */
@@ -87,6 +89,11 @@ export function getYgoTextRegions(frame: CardFrameRect): CardTextRegions {
 /** Todas as bandas candidatas de set code para OCR. */
 export function getSetCodeBandCandidates(frame: CardFrameRect): CardFrameRect[] {
   return SET_CODE_BAND_RATIOS.map((r) => regionFromRatios(frame, r))
+}
+
+/** Recorte da arte para hash visual / comparação. */
+export function getArtRegion(frame: CardFrameRect): CardFrameRect {
+  return regionFromRatios(frame, YGO_REGION_RATIOS.art)
 }
 
 function clampFrame(

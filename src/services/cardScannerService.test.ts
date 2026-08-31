@@ -170,6 +170,9 @@ describe('scoreIdentifyResult', () => {
     },
     nameBandPreviewUrl: '',
     setCodePreviewUrl: '',
+    visualMatches: [],
+    artPHash: null,
+    artPreviewUrl: '',
   }
 
   it('prefers results with detected set code', () => {

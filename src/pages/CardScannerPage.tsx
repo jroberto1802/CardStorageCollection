@@ -22,6 +22,8 @@ import {
   type ScannerFrameInput,
   type ScannerSuggestion,
 } from '@/services/cardScannerService'
+import { preloadArtHashIndex } from '@/services/cardArtHashService'
+import type { VisualMatchCandidate } from '@/utils/cardArtHash'
 import type { AppLanguage } from '@/types'
 import { languageLabel } from '@/utils/cardHelpers'
 
@@ -42,6 +44,8 @@ export function CardScannerPage() {
   const [perspectiveCorrected, setPerspectiveCorrected] = useState(false)
   const [burstCount, setBurstCount] = useState(0)
   const [detectedSetCode, setDetectedSetCode] = useState<string | null>(null)
+  const [visualMatches, setVisualMatches] = useState<VisualMatchCandidate[]>([])
+  const [artPreview, setArtPreview] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [preset, setPreset] = useState<{
     cardId: number
@@ -55,6 +59,7 @@ export function CardScannerPage() {
 
   useEffect(() => {
     preloadOcrWorker()
+    preloadArtHashIndex()
     return () => {
       void terminateOcrWorker()
     }
@@ -64,9 +69,10 @@ export function CardScannerPage() {
     ocrName: string
     setCode?: string | null
     extraCandidates?: string[]
+    visualMatches?: VisualMatchCandidate[]
   }): Promise<ScannerSuggestion[]> {
     const ocrName = params.ocrName.trim()
-    if (!ocrName && !params.setCode) {
+    if (!ocrName && !params.setCode && !params.visualMatches?.length) {
       setSuggestions([])
       return []
     }
@@ -78,6 +84,7 @@ export function CardScannerPage() {
         ocrName: ocrName || params.setCode || '',
         setCode: params.setCode,
         extraCandidates: params.extraCandidates,
+        visualMatches: params.visualMatches,
       })
       setSuggestions(items)
       return items
@@ -106,6 +113,8 @@ export function CardScannerPage() {
     setPerspectiveCorrected(false)
     setBurstCount(0)
     setDetectedSetCode(null)
+    setVisualMatches([])
+    setArtPreview(null)
 
     try {
       const frames: ScannerFrameInput[] = (
@@ -133,30 +142,37 @@ export function CardScannerPage() {
       setAutoDetected(result.autoDetected)
       setPerspectiveCorrected(result.perspectiveCorrected)
       setDetectedSetCode(result.detectedSetCode)
+      setVisualMatches(result.visualMatches)
+      setArtPreview(result.artPreviewUrl || null)
 
       const searchByName =
         result.candidates[0] ?? stripFallbackName(result.text) ?? ''
       const searchBySet = result.detectedSetCode
-      const best = searchByName || searchBySet || result.setCodes[0] || ''
+      const bestVisual = result.visualMatches[0]
+      const best =
+        searchBySet || searchByName || result.setCodes[0] || ''
 
-      if (!best) {
+      if (!best && !bestVisual) {
         setFeedback(
-          'Não consegui ler nome nem set code. Enquadre a carta com boa luz e tente de novo.',
+          'Não consegui ler nome, set code nem arte. Enquadre a carta com boa luz e tente de novo.',
         )
         return
       }
 
-      setQuery(searchByName || best)
+      setQuery(searchByName || best || `visual:${bestVisual?.cardId ?? ''}`)
       setFeedback(
         searchBySet
           ? `Set code ${searchBySet} · buscando impressão...`
-          : 'Set code não lido · buscando por nome + autocorreções...',
+          : bestVisual
+            ? `Match visual (${bestVisual.distance} bits) · buscando carta...`
+            : 'Set code não lido · buscando por nome + autocorreções...',
       )
 
       const items = await runSuggest({
         ocrName: searchByName || best,
         setCode: searchBySet,
         extraCandidates: result.candidates.slice(1, 4),
+        visualMatches: result.visualMatches,
       })
 
       if (items.length > 0) {
@@ -172,6 +188,10 @@ export function CardScannerPage() {
             burstCount > 1 ? ` · ${burstCount} fotos` : ''
           }${result.autoDetected ? ' · auto-enquadrado' : ''}${
             result.perspectiveCorrected ? ' · perspectiva corrigida' : ''
+          }${
+            items.some((s) => s.label === 'visual')
+              ? ' · match visual'
+              : ''
           }${
             setHit ? ` · impressão ${searchBySet}` : searchBySet ? ` · set ${searchBySet}` : ''
           }. Escolha a carta ou escaneie outra.`,
@@ -210,6 +230,8 @@ export function CardScannerPage() {
     setPerspectiveCorrected(false)
     setBurstCount(0)
     setDetectedSetCode(null)
+    setVisualMatches([])
+    setArtPreview(null)
     setFeedback('Pronto para escanear outra carta.')
     setError(null)
   }
@@ -238,7 +260,7 @@ export function CardScannerPage() {
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
             Nova abordagem: enquadre a carta e toque em <strong className="text-[var(--color-text)]">Identificar</strong>.
-            Captura {SCANNER_BURST_COUNT} fotos em sequência, corrige perspectiva, lê o set code primeiro e só então o nome.
+            Captura {SCANNER_BURST_COUNT} fotos em sequência, corrige perspectiva, lê set code, compara a arte (pHash) e só então o nome.
           </p>
         </div>
         <Link
@@ -301,7 +323,11 @@ export function CardScannerPage() {
             </p>
           )}
 
-          {(autoDetected || detectedSetCode || perspectiveCorrected || burstCount > 1) && (
+          {(autoDetected ||
+            detectedSetCode ||
+            perspectiveCorrected ||
+            burstCount > 1 ||
+            visualMatches.length > 0) && (
             <div className="flex flex-wrap gap-2">
               {burstCount > 1 && (
                 <span className="rounded-md border border-sky-400/40 bg-sky-400/10 px-2 py-1 text-[11px] text-sky-200">
@@ -323,11 +349,16 @@ export function CardScannerPage() {
                   Set code: {detectedSetCode}
                 </span>
               )}
+              {visualMatches[0] && (
+                <span className="rounded-md border border-fuchsia-400/40 bg-fuchsia-400/10 px-2 py-1 text-[11px] text-fuchsia-200">
+                  Visual: {visualMatches[0].distance} bits
+                </span>
+              )}
             </div>
           )}
 
-          {(nameBandPreview || setCodePreview) && (
-            <div className="grid gap-3 sm:grid-cols-2">
+          {(nameBandPreview || setCodePreview || artPreview) && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {nameBandPreview && (
                 <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
                   <p className="mb-2 text-xs text-[var(--color-muted)]">
@@ -348,6 +379,18 @@ export function CardScannerPage() {
                   <img
                     src={setCodePreview}
                     alt="Faixa do set code"
+                    className="max-h-24 w-full rounded-lg bg-white object-contain"
+                  />
+                </div>
+              )}
+              {artPreview && (
+                <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                  <p className="mb-2 text-xs text-[var(--color-muted)]">
+                    Arte (pHash)
+                  </p>
+                  <img
+                    src={artPreview}
+                    alt="Recorte da arte"
                     className="max-h-24 w-full rounded-lg bg-white object-contain"
                   />
                 </div>
@@ -473,7 +516,7 @@ export function CardScannerPage() {
             <div className="border-b border-[var(--color-border)] px-4 py-3">
               <h3 className="text-sm font-semibold">3 sugestões (corretor)</h3>
               <p className="text-xs text-[var(--color-muted)]">
-                Set code tem prioridade · depois nome + autocorreções · PT/EN
+                Set code · match visual (pHash) · nome + autocorreções · PT/EN
               </p>
             </div>
 

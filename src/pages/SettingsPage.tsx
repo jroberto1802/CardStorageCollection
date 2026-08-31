@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Database, ImageIcon, Layers, RefreshCw } from 'lucide-react'
+import { Database, ImageIcon, Layers, RefreshCw, Sparkles } from 'lucide-react'
 import { useSettings } from '@/contexts/SettingsContext'
+import {
+  fetchCardArtHashStatus,
+  invalidateArtHashIndex,
+  syncCardArtHashesBatch,
+  type CardArtHashStatus,
+} from '@/services/cardArtHashService'
 import {
   fetchImageSyncStatus,
   formatBytes,
@@ -54,6 +60,18 @@ export function SettingsPage() {
   })
   const stopImageSyncRef = useRef(false)
 
+  const [hashStatus, setHashStatus] = useState<CardArtHashStatus | null>(null)
+  const [hashSyncing, setHashSyncing] = useState(false)
+  const [hashMessage, setHashMessage] = useState<string | null>(null)
+  const [hashError, setHashError] = useState<string | null>(null)
+  const [hashProgress, setHashProgress] = useState({
+    synced: 0,
+    failed: 0,
+    skipped: 0,
+    batches: 0,
+  })
+  const stopHashSyncRef = useRef(false)
+
   const [deckSyncing, setDeckSyncing] = useState(false)
   const [deckRun, setDeckRun] = useState<DeckSyncRun | null>(null)
   const [deckMessage, setDeckMessage] = useState<string | null>(null)
@@ -63,14 +81,16 @@ export function SettingsPage() {
   async function loadMeta() {
     setLoadingMeta(true)
     try {
-      const [log, count, status] = await Promise.all([
+      const [log, count, status, artHashStatus] = await Promise.all([
         fetchLatestSyncLog(),
         countCards(language),
         fetchImageSyncStatus(language),
+        fetchCardArtHashStatus(),
       ])
       setLatestLog(log)
       setCardCount(count)
       setImageStatus(status)
+      setHashStatus(artHashStatus)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao carregar metadados')
     }
@@ -197,6 +217,81 @@ export function SettingsPage() {
 
   function handleStopImageSync() {
     stopImageSyncRef.current = true
+  }
+
+  async function handleHashSync() {
+    stopHashSyncRef.current = false
+    setHashSyncing(true)
+    setHashError(null)
+    setHashMessage(null)
+    setHashProgress({ synced: 0, failed: 0, skipped: 0, batches: 0 })
+
+    let afterCardId = 0
+    let totalSynced = 0
+    let totalFailed = 0
+    let totalSkipped = 0
+    let batches = 0
+
+    try {
+      for (;;) {
+        if (stopHashSyncRef.current) {
+          setHashMessage(
+            `Sincronização de hashes interrompida. ${totalSynced} hashes gerados.`,
+          )
+          break
+        }
+
+        const result = await syncCardArtHashesBatch({
+          language: 'en',
+          afterCardId,
+          batchSize: 25,
+        })
+
+        if (!result.success) {
+          setHashError(result.error ?? 'Falha ao gerar hashes visuais')
+          break
+        }
+
+        batches += 1
+        totalSynced += result.synced
+        totalFailed += result.failed
+        totalSkipped += result.skipped
+        afterCardId = result.lastCardId
+
+        setHashProgress({
+          synced: totalSynced,
+          failed: totalFailed,
+          skipped: totalSkipped,
+          batches,
+        })
+        setHashStatus({
+          totalHashes: result.totalHashes ?? hashStatus?.totalHashes ?? 0,
+          loadedInMemory: false,
+        })
+
+        if (!result.hasMore) {
+          setHashMessage(
+            `Hashes visuais sincronizados: ${totalSynced} novos` +
+              (totalSkipped ? `, ${totalSkipped} já existentes` : '') +
+              (totalFailed ? `, ${totalFailed} falhas` : '') +
+              `. Total no banco: ${(result.totalHashes ?? 0).toLocaleString('pt-BR')}.`,
+          )
+          break
+        }
+      }
+
+      invalidateArtHashIndex()
+      const status = await fetchCardArtHashStatus()
+      setHashStatus(status)
+    } catch (err) {
+      setHashError(err instanceof Error ? err.message : 'Falha inesperada nos hashes')
+    } finally {
+      setHashSyncing(false)
+    }
+  }
+
+  function handleStopHashSync() {
+    stopHashSyncRef.current = true
   }
 
   async function handleDeckSync(forceRestart = false) {
@@ -413,7 +508,7 @@ export function SettingsPage() {
         <button
           type="button"
           onClick={() => void handleSync()}
-          disabled={syncing || imageSyncing || deckSyncing}
+          disabled={syncing || imageSyncing || hashSyncing || deckSyncing}
           className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
         >
           <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
@@ -484,7 +579,7 @@ export function SettingsPage() {
           <button
             type="button"
             onClick={() => void handleImageSync()}
-            disabled={imageSyncing || syncing || deckSyncing || Boolean(imageStatus?.near_quota)}
+            disabled={imageSyncing || syncing || hashSyncing || deckSyncing || Boolean(imageStatus?.near_quota)}
             className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${imageSyncing ? 'animate-spin' : ''}`} />
@@ -507,6 +602,82 @@ export function SettingsPage() {
           lotes; pode levar bastante tempo na primeira execução. Depois, faça o deploy
           da Edge Function <code>sync-card-images</code> e aplique a migration{' '}
           <code>004_card_images_storage.sql</code>.
+        </p>
+      </section>
+
+      <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-medium">Hashes visuais (scanner)</h2>
+            <p className="mt-1 text-sm text-[var(--color-muted)]">
+              Gera pHash da arte de cada carta a partir das miniaturas já espelhadas.
+              Necessário para o match visual no scanner (client-side, plano Free).
+            </p>
+          </div>
+          <Sparkles className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
+        </div>
+
+        <div className="mb-5 grid gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-2)] p-4 text-sm sm:grid-cols-3">
+          <div>
+            <p className="text-[var(--color-muted)]">Hashes no banco</p>
+            <p className="mt-1 font-medium">
+              {loadingMeta
+                ? '...'
+                : (hashStatus?.totalHashes ?? 0).toLocaleString('pt-BR')}
+            </p>
+          </div>
+          <div>
+            <p className="text-[var(--color-muted)]">Idioma das imagens</p>
+            <p className="mt-1 font-medium">Inglês (EN)</p>
+          </div>
+          <div>
+            <p className="text-[var(--color-muted)]">Progresso desta sessão</p>
+            <p className="mt-1 font-medium">
+              {hashSyncing || hashProgress.batches > 0
+                ? `${hashProgress.synced} novos / ${hashProgress.skipped} ok / ${hashProgress.failed} falhas (${hashProgress.batches} lotes)`
+                : '—'}
+            </p>
+          </div>
+        </div>
+
+        {hashError && (
+          <p className="mb-4 rounded-lg border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 px-3 py-2 text-sm text-red-300">
+            {hashError}
+          </p>
+        )}
+
+        {hashMessage && (
+          <p className="mb-4 rounded-lg border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-3 py-2 text-sm text-green-300">
+            {hashMessage}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => void handleHashSync()}
+            disabled={hashSyncing || syncing || imageSyncing || deckSyncing}
+            className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${hashSyncing ? 'animate-spin' : ''}`} />
+            {hashSyncing ? 'Gerando hashes...' : 'Sincronizar hashes visuais'}
+          </button>
+
+          {hashSyncing && (
+            <button
+              type="button"
+              onClick={handleStopHashSync}
+              className="rounded-lg border border-[var(--color-border)] px-4 py-2.5 text-sm text-[var(--color-muted)] transition hover:bg-[var(--color-surface-2)]"
+            >
+              Parar
+            </button>
+          )}
+        </div>
+
+        <p className="mt-3 text-xs text-[var(--color-muted)]">
+          Rode primeiro a sincronização de miniaturas. Cada lote baixa imagens do Storage
+          e calcula o pHash no navegador (~25 cartas por vez). Aplique a migration{' '}
+          <code>008_card_art_hashes.sql</code> antes de usar.
         </p>
       </section>
 
@@ -599,7 +770,7 @@ export function SettingsPage() {
           <button
             type="button"
             onClick={() => void handleDeckSync(false)}
-            disabled={deckSyncing || syncing || imageSyncing}
+            disabled={deckSyncing || syncing || imageSyncing || hashSyncing}
             className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${deckSyncing ? 'animate-spin' : ''}`} />
