@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowDownWideNarrow, Loader2, Search, Users, X } from 'lucide-react'
+import { ArrowDownWideNarrow, ListOrdered, Loader2, Search, Users, X } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useSettings } from '@/contexts/SettingsContext'
+import { CommunityMissingCardsModal } from '@/components/community/CommunityMissingCardsModal'
 import { searchCatalog } from '@/services/catalogService'
 import { countSyncedDecks, listSyncedDecks } from '@/services/syncedDeckService'
 import {
@@ -59,6 +60,7 @@ export function CommunityDecksPage() {
   const cardPickerRef = useRef<HTMLDivElement>(null)
 
   const [sortByOwned, setSortByOwned] = useState(false)
+  const [missingRankOpen, setMissingRankOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hasAny, setHasAny] = useState<boolean | null>(null)
@@ -226,14 +228,26 @@ export function CommunityDecksPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Decks da comunidade
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Top decks sincronizados do Master Duel Meta. Veja o que você já possui e
-          importe para Meus decks.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Decks da comunidade
+          </h1>
+          <p className="mt-1 text-sm text-[var(--color-muted)]">
+            Top decks sincronizados do Master Duel Meta. Veja o que você já possui e
+            importe para Meus decks.
+          </p>
+        </div>
+        {hasAny && (
+          <button
+            type="button"
+            onClick={() => setMissingRankOpen(true)}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-muted)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+          >
+            <ListOrdered className="h-4 w-4 text-[var(--color-accent)]" />
+            Staples que faltam
+          </button>
+        )}
       </div>
 
       <div className="flex flex-col gap-3">
@@ -481,6 +495,12 @@ export function CommunityDecksPage() {
           )}
         </>
       )}
+
+      <CommunityMissingCardsModal
+        open={missingRankOpen}
+        language={language}
+        onClose={() => setMissingRankOpen(false)}
+      />
     </div>
   )
 }

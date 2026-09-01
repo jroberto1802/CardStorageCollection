@@ -6,6 +6,7 @@ import { getPrimaryImage } from '@/utils/cardHelpers'
 import type {
   AppLanguage,
   CollectionItem,
+  CommunityMissingCardRank,
   DeckZone,
   ImportSyncedDeckResult,
   SyncedDeck,
@@ -792,4 +793,114 @@ export async function importSyncedDeckToUserDeck(
     cappedCopies,
     truncatedByLimit,
   }
+}
+
+const MISSING_RANK_CACHE_KEY = 'csc-community-missing-rank-v1'
+const MISSING_RANK_CACHE_TTL_MS = 15 * 60 * 1000
+
+type MissingRankCache = {
+  at: number
+  language: AppLanguage
+  items: CommunityMissingCardRank[]
+}
+
+function readMissingRankCache(language: AppLanguage): CommunityMissingCardRank[] | null {
+  try {
+    const raw = sessionStorage.getItem(MISSING_RANK_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as MissingRankCache
+    if (parsed.language !== language) return null
+    if (Date.now() - parsed.at > MISSING_RANK_CACHE_TTL_MS) return null
+    return parsed.items
+  } catch {
+    return null
+  }
+}
+
+function writeMissingRankCache(
+  language: AppLanguage,
+  items: CommunityMissingCardRank[],
+): void {
+  try {
+    const payload: MissingRankCache = { at: Date.now(), language, items }
+    sessionStorage.setItem(MISSING_RANK_CACHE_KEY, JSON.stringify(payload))
+  } catch {
+    // quota / private mode — ignora
+  }
+}
+
+export function clearCommunityMissingCardRankCache(): void {
+  try {
+    sessionStorage.removeItem(MISSING_RANK_CACHE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Top cartas nos decks MDM que o usuário não possui (quantity > 0).
+ * Usa RPC Postgres; cache de 15 min em sessionStorage.
+ */
+export async function fetchCommunityMissingCardRanking(
+  language: AppLanguage,
+  options?: { limit?: number; refresh?: boolean },
+): Promise<CommunityMissingCardRank[]> {
+  const limit = Math.min(200, Math.max(1, options?.limit ?? 100))
+  const refresh = options?.refresh ?? false
+
+  if (!refresh) {
+    const cached = readMissingRankCache(language)
+    if (cached) return cached
+  }
+
+  const { data, error } = await supabase.rpc('get_community_missing_card_ranking', {
+    p_limit: limit,
+  })
+
+  if (error) {
+    const msg = error.message.toLowerCase()
+    if (
+      msg.includes('get_community_missing_card_ranking') ||
+      msg.includes('does not exist') ||
+      msg.includes('could not find')
+    ) {
+      throw new Error(
+        'Função de ranking não encontrada. Aplique a migration 007_community_missing_ranking.sql no Supabase.',
+      )
+    }
+    throw new Error(error.message)
+  }
+
+  const rows = (data ?? []) as Array<{
+    card_id: number
+    deck_count: number
+    total_copies: number
+  }>
+
+  if (rows.length === 0) {
+    writeMissingRankCache(language, [])
+    return []
+  }
+
+  const ids = rows.map((r) => Number(r.card_id)).filter((id) => Number.isFinite(id))
+  const catalog = await getCardsByIdsWithFallback(language, ids)
+  const byId = new Map(catalog.map((c) => [c.id, c]))
+
+  const items: CommunityMissingCardRank[] = rows.map((row) => {
+    const cardId = Number(row.card_id)
+    const catalogCard = byId.get(cardId)
+    const images = catalogCard ? getPrimaryImage(catalogCard) : { full: null, small: null }
+    return {
+      cardId,
+      deckCount: Number(row.deck_count) || 0,
+      totalCopies: Number(row.total_copies) || 0,
+      name: catalogCard?.name ?? `Carta #${cardId}`,
+      language: catalogCard?.language ?? language,
+      imageUrl: images.full,
+      imageUrlSmall: images.small,
+    }
+  })
+
+  writeMissingRankCache(language, items)
+  return items
 }

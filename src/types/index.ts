@@ -418,3 +418,14 @@ export interface ImportSyncedDeckResult {
   truncatedByLimit: number
 }
 
+/** Carta popular nos decks da comunidade que o usuário não possui. */
+export interface CommunityMissingCardRank {
+  cardId: number
+  deckCount: number
+  totalCopies: number
+  name: string
+  language: AppLanguage
+  imageUrl: string | null
+  imageUrlSmall: string | null
+}
+
