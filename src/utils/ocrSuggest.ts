@@ -81,7 +81,15 @@ export function buildScannerQueryVariants(
   return variants.slice(0, 3)
 }
 
-export type SuggestionLabel = 'original' | 'correção 1' | 'correção 2'
+export type SuggestionLabel =
+  | 'original'
+  | 'correção 1'
+  | 'correção 2'
+  | 'visual'
+  | 'set code'
+
+export const VISUAL_SUGGESTION_LABEL: SuggestionLabel = 'visual'
+export const SET_CODE_SUGGESTION_LABEL: SuggestionLabel = 'set code'
 
 export function suggestionLabel(index: number): SuggestionLabel {
   if (index === 0) return 'original'

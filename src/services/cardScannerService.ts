@@ -1,6 +1,16 @@
 import { createWorker, PSM, type Worker } from 'tesseract.js'
-import { searchCatalogBothLanguages } from '@/services/catalogService'
+import {
+  getCardsByIdsWithFallback,
+  searchCatalogBothLanguages,
+  setCodeExistsInCatalog,
+} from '@/services/catalogService'
+import { findVisualMatchesFromFrame } from '@/services/cardArtHashService'
 import type { CardImpression } from '@/types'
+import {
+  VISUAL_MATCH_STRONG_DISTANCE,
+  type VisualMatchCandidate,
+} from '@/utils/cardArtHash'
+import { cardToCatalogItem } from '@/utils/cardHelpers'
 import {
   getSetCodeBandCandidates,
   getYgoTextRegions,
@@ -9,13 +19,28 @@ import {
   type CardTextRegions,
 } from '@/utils/cardFrameDetector'
 import {
+  preparePerspectiveCanvas,
+} from '@/utils/cardPerspective'
+import {
   buildScannerQueryVariants,
   nameSimilarity,
+  SET_CODE_SUGGESTION_LABEL,
   suggestionLabel,
+  VISUAL_SUGGESTION_LABEL,
   type SuggestionLabel,
 } from '@/utils/ocrSuggest'
+import {
+  extractSetCodes,
+  generateSetCodeCandidates,
+  normalizeSetCode,
+} from '@/utils/setCodeOcr'
 
 export type CardFrameRect = { x: number; y: number; width: number; height: number }
+
+export { extractSetCodes, normalizeSetCode } from '@/utils/setCodeOcr'
+
+export const SCANNER_BURST_COUNT = 3
+export const SCANNER_BURST_INTERVAL_MS = 90
 
 export type { CardTextRegions }
 
@@ -35,6 +60,13 @@ async function getOcrWorker(): Promise<Worker> {
     })()
   }
   return workerPromise
+}
+
+/** Pré-carrega modelos PT+EN em background (chamar ao abrir a página do scanner). */
+export function preloadOcrWorker(): void {
+  void getOcrWorker().catch(() => {
+    // Falha silenciosa — identify mostrará erro se necessário
+  })
 }
 
 export async function terminateOcrWorker(): Promise<void> {
@@ -224,62 +256,24 @@ export function fixGoldFoilOcrTypos(value: string): string {
     .replace(/\bWINGEO\b/gi, 'WINGED')
 }
 
-const SET_CODE_RE = /\b([A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4})\b/gi
+async function resolveSetCodeWithCatalog(raw: string): Promise<string | null> {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
 
-/** Correções típicas de OCR em set codes (E↔F, língua, zeros). */
-export function fixSetCodeOcrTypos(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9-\s]/g, ' ')
-    .replace(/\s+/g, '')
-    // KICO-FN065 → KICO-EN065 (E lido como F)
-    .replace(/-FN(\d)/g, '-EN$1')
-    .replace(/-FM(\d)/g, '-EN$1')
-    .replace(/-EM(\d)/g, '-EN$1')
-    .replace(/-EH(\d)/g, '-EN$1')
-    .replace(/-EU(\d)/g, '-EN$1')
-    // PT/EN truncados
-    .replace(/-F(\d)/g, '-EN$1')
-    .replace(/-E(\d)/g, '-EN$1')
-    .replace(/-P(\d)/g, '-PT$1')
-    // S no meio do número (5)
-    .replace(/([A-Z]{2})S(\d{2})$/g, '$15$2')
-    .replace(/([A-Z]{2})(\d)S(\d)$/g, '$1$25$3')
-}
+  const candidates = [
+    ...new Set(
+      [
+        normalizeSetCode(trimmed),
+        ...generateSetCodeCandidates(trimmed),
+      ].filter((code): code is string => Boolean(code)),
+    ),
+  ]
 
-/** Normaliza e corrige OCR comum em set codes YGO. */
-export function normalizeSetCode(raw: string): string | null {
-  const code = fixSetCodeOcrTypos(raw)
-
-  const parts = code.match(/^([A-Z0-9]{2,5})-([A-Z]{0,3})(.+)$/)
-  if (!parts) return null
-
-  const [, setId, langPart, rest] = parts
-  let lang = langPart
-  let num = rest.replace(/[OIL]/g, (c) => (c === 'O' ? '0' : '1'))
-
-  // ENO68 → EN + 068 (O do meio era zero do número)
-  if (lang.length >= 2 && /[OIL]$/.test(lang)) {
-    const last = lang.at(-1)!
-    lang = lang.slice(0, -1)
-    num = (last === 'O' ? '0' : '1') + num
+  for (const code of candidates) {
+    if (await setCodeExistsInCatalog(code)) return code
   }
 
-  // FN065 já tratado em fixSetCodeOcrTypos; reforço se sobrou F*
-  if (lang === 'FN' || lang === 'FM' || lang === 'F') lang = 'EN'
-  if (lang === 'P') lang = 'PT'
-
-  const normalized = `${setId}-${lang}${num}`
-  const match = normalized.match(/^([A-Z0-9]{2,5}-[A-Z]{0,3}\d{1,4})$/)
-  return match ? match[1] : null
-}
-
-export function extractSetCodes(ocrText: string): string[] {
-  const found = ocrText.toUpperCase().match(SET_CODE_RE) ?? []
-  const normalized = found
-    .map((s) => normalizeSetCode(s))
-    .filter((s): s is string => Boolean(s))
-  return [...new Set(normalized)]
+  return normalizeSetCode(trimmed) ?? candidates[0] ?? null
 }
 
 export function extractCardNameCandidates(ocrText: string, limit = 6): string[] {
@@ -689,11 +683,13 @@ async function recognizeSetCode(
     const result = await worker.recognize(image)
     const text = result.data.text ?? ''
     const confidence = Number(result.data.confidence ?? 0)
-    const code =
-      normalizeSetCode(text) ?? extractSetCodes(text)[0] ?? null
+    const code = await resolveSetCodeWithCatalog(text)
     const score = (code ? 1000 : 0) + confidence + (text.trim() ? 5 : 0)
     const bestCode =
-      normalizeSetCode(best.text) ?? extractSetCodes(best.text)[0] ?? null
+      (await resolveSetCodeWithCatalog(best.text)) ??
+      normalizeSetCode(best.text) ??
+      extractSetCodes(best.text)[0] ??
+      null
     const bestScore =
       (bestCode ? 1000 : 0) + best.confidence + (best.text.trim() ? 5 : 0)
     if (score > bestScore) best = { text, confidence }
@@ -748,7 +744,10 @@ async function recognizeSetCodeFromFrame(
       const previewUrl = prepared.toDataURL('image/jpeg', 0.92)
       const result = await recognizeSetCode(prepared)
       const code =
-        normalizeSetCode(result.text) ?? extractSetCodes(result.text)[0] ?? null
+        (await resolveSetCodeWithCatalog(result.text)) ??
+        normalizeSetCode(result.text) ??
+        extractSetCodes(result.text)[0] ??
+        null
       const score = scoreSetCodeAttempt({
         code,
         text: result.text,
@@ -799,43 +798,26 @@ function scoreOcrResult(text: string, confidence: number): number {
   return confidence + bestLen * 3 + names.length * 8 + extractSetCodes(text).length * 12
 }
 
-export interface IdentifyResult {
+async function recognizeNameFromFrame(
+  ocrCanvas: HTMLCanvasElement,
+  frame: CardFrameRect,
+): Promise<{
   text: string
   confidence: number
   candidates: string[]
-  setCodes: string[]
-  /** Set code lido na região dedicada (ex.: BLVO-EN068) */
-  detectedSetCode: string | null
-  autoDetected: boolean
-  regions: CardTextRegions
   nameBandPreviewUrl: string
-  setCodePreviewUrl: string
-}
-
-/**
- * Auto-enquadra (se possível), lê nome + set code em regiões fixas do layout YGO.
- */
-export async function identifyCardFromFrame(
-  fullCanvas: HTMLCanvasElement,
-  manualFrame: CardFrameRect,
-  source: CardCaptureSource = 'camera',
-): Promise<IdentifyResult> {
-  const { frame, autoDetected } = resolveCardFrame(fullCanvas, manualFrame, source)
-  const regions = getYgoTextRegions(frame)
-
-  const nameBand = cropNameBandFromFrame(fullCanvas, frame)
-  // Dois pré-processamentos: foil dourado + cinza clássico
+  merged: string
+}> {
+  const nameBand = cropNameBandFromFrame(ocrCanvas, frame)
   const preparedGold = preprocessNameForOcr(nameBand)
   const preparedGray = preprocessForOcr(nameBand)
 
-  const [lineGold, blockGold, lineGray, blockGray, setCodeHit] =
-    await Promise.all([
-      recognizeOnce(preparedGold, PSM.SINGLE_LINE),
-      recognizeOnce(preparedGold, PSM.SINGLE_BLOCK),
-      recognizeOnce(preparedGray, PSM.SINGLE_LINE),
-      recognizeOnce(preparedGray, PSM.SINGLE_BLOCK),
-      recognizeSetCodeFromFrame(fullCanvas, frame),
-    ])
+  const [lineGold, blockGold, lineGray, blockGray] = await Promise.all([
+    recognizeOnce(preparedGold, PSM.SINGLE_LINE),
+    recognizeOnce(preparedGold, PSM.SINGLE_BLOCK),
+    recognizeOnce(preparedGray, PSM.SINGLE_LINE),
+    recognizeOnce(preparedGray, PSM.SINGLE_BLOCK),
+  ])
 
   const namePasses = [
     { ...lineGold, preview: preparedGold },
@@ -846,6 +828,7 @@ export async function identifyCardFromFrame(
     (a, b) =>
       scoreOcrResult(b.text, b.confidence) - scoreOcrResult(a.text, a.confidence),
   )
+
   const best = namePasses[0] ?? {
     text: '',
     confidence: 0,
@@ -853,18 +836,7 @@ export async function identifyCardFromFrame(
   }
   const merged = namePasses.map((p) => p.text).join('\n')
   const cleanedBest = normalizeOcrCardName(best.text.trim() || merged.trim())
-  const candidates = extractCardNameCandidates(
-    `${cleanedBest}\n${merged}`,
-    8,
-  )
-  const nameBandPreviewUrl = best.preview.toDataURL('image/jpeg', 0.85)
-
-  const setFromName = extractSetCodes(merged)
-  const setFromRegion = setCodeHit.code
-  const allSetCodes = [
-    ...(setFromRegion ? [setFromRegion] : []),
-    ...setFromName.filter((c) => c !== setFromRegion),
-  ]
+  const candidates = extractCardNameCandidates(`${cleanedBest}\n${merged}`, 8)
 
   return {
     text: cleanedBest || candidates[0] || best.text.trim() || merged.trim(),
@@ -875,12 +847,163 @@ export async function identifyCardFromFrame(
         : cleanedBest
           ? [cleanedBest]
           : [],
+    nameBandPreviewUrl: best.preview.toDataURL('image/jpeg', 0.85),
+    merged,
+  }
+}
+
+export interface IdentifyResult {
+  text: string
+  confidence: number
+  candidates: string[]
+  setCodes: string[]
+  /** Set code lido na região dedicada (ex.: BLVO-EN068) */
+  detectedSetCode: string | null
+  autoDetected: boolean
+  /** Carta retificada por perspectiva antes do OCR */
+  perspectiveCorrected: boolean
+  regions: CardTextRegions
+  nameBandPreviewUrl: string
+  setCodePreviewUrl: string
+  /** Candidatos por similaridade visual (pHash da arte) */
+  visualMatches: VisualMatchCandidate[]
+  artPHash: string | null
+  artPreviewUrl: string
+}
+
+export interface ScannerFrameInput {
+  fullCanvas: HTMLCanvasElement
+  manualFrame: CardFrameRect
+  source?: CardCaptureSource
+}
+
+/** Pontua resultado para escolher o melhor frame do burst. */
+export function scoreIdentifyResult(result: IdentifyResult): number {
+  let score = 0
+  if (result.detectedSetCode) score += 2500
+  score += result.setCodes.length * 200
+  score += result.confidence
+  score += result.candidates.length * 12
+  if (result.text.trim()) score += 30
+  if (result.perspectiveCorrected) score += 5
+
+  const bestVisual = result.visualMatches[0]
+  if (bestVisual) {
+    if (bestVisual.distance <= VISUAL_MATCH_STRONG_DISTANCE) score += 2200
+    else if (bestVisual.distance <= 15) score += 1200
+    score += Math.max(0, 20 - bestVisual.distance) * 25
+  }
+
+  return score
+}
+
+/**
+ * Processa vários frames (burst) e retorna o de maior confiança.
+ * Interrompe cedo quando um set code válido é lido.
+ */
+export async function identifyCardFromFrames(
+  frames: ScannerFrameInput[],
+): Promise<IdentifyResult> {
+  if (frames.length === 0) {
+    throw new Error('Nenhum frame para identificar')
+  }
+
+  if (frames.length === 1) {
+    const only = frames[0]
+    return identifyCardFromFrame(
+      only.fullCanvas,
+      only.manualFrame,
+      only.source,
+    )
+  }
+
+  let best: IdentifyResult | null = null
+  let bestScore = Number.NEGATIVE_INFINITY
+
+  for (const input of frames) {
+    const result = await identifyCardFromFrame(
+      input.fullCanvas,
+      input.manualFrame,
+      input.source,
+    )
+    const score = scoreIdentifyResult(result)
+    if (score > bestScore) {
+      bestScore = score
+      best = result
+    }
+    if (result.detectedSetCode) break
+  }
+
+  if (best) return best
+
+  const fallback = frames[0]
+  return identifyCardFromFrame(
+    fallback.fullCanvas,
+    fallback.manualFrame,
+    fallback.source,
+  )
+}
+
+/**
+ * Auto-enquadra (se possível), deskew, lê set code primeiro e nome só se necessário.
+ */
+export async function identifyCardFromFrame(
+  fullCanvas: HTMLCanvasElement,
+  manualFrame: CardFrameRect,
+  source: CardCaptureSource = 'camera',
+): Promise<IdentifyResult> {
+  const { frame, autoDetected } = resolveCardFrame(fullCanvas, manualFrame, source)
+  const {
+    canvas: ocrCanvas,
+    frame: ocrFrame,
+    perspectiveCorrected,
+  } = preparePerspectiveCanvas(fullCanvas, frame, {
+    allowWarp: source !== 'camera',
+  })
+  const regions = getYgoTextRegions(ocrFrame)
+  const visual = await findVisualMatchesFromFrame(ocrCanvas, ocrFrame)
+
+  const setCodeHit = await recognizeSetCodeFromFrame(ocrCanvas, ocrFrame)
+  const setFromRegion = setCodeHit.code
+
+  if (setFromRegion) {
+    return {
+      text: '',
+      confidence: 0,
+      candidates: [],
+      setCodes: [setFromRegion],
+      detectedSetCode: setFromRegion,
+      autoDetected,
+      perspectiveCorrected,
+      regions,
+      nameBandPreviewUrl: '',
+      setCodePreviewUrl: setCodeHit.previewUrl,
+      visualMatches: visual.visualMatches,
+      artPHash: visual.artPHash,
+      artPreviewUrl: visual.artPreviewUrl,
+    }
+  }
+
+  const nameResult = await recognizeNameFromFrame(ocrCanvas, ocrFrame)
+  const setFromName = extractSetCodes(nameResult.merged)
+  const allSetCodes = [
+    ...setFromName,
+  ]
+
+  return {
+    text: nameResult.text,
+    confidence: nameResult.confidence,
+    candidates: nameResult.candidates,
     setCodes: allSetCodes,
-    detectedSetCode: setFromRegion,
+    detectedSetCode: null,
     autoDetected,
+    perspectiveCorrected,
     regions,
-    nameBandPreviewUrl,
+    nameBandPreviewUrl: nameResult.nameBandPreviewUrl,
     setCodePreviewUrl: setCodeHit.previewUrl,
+    visualMatches: visual.visualMatches,
+    artPHash: visual.artPHash,
+    artPreviewUrl: visual.artPreviewUrl,
   }
 }
 
@@ -940,6 +1063,7 @@ export async function suggestScannerMatches(params: {
   ocrName: string
   setCode?: string | null
   extraCandidates?: string[]
+  visualMatches?: VisualMatchCandidate[]
 }): Promise<ScannerSuggestion[]> {
   const ocrName = normalizeOcrCardName(params.ocrName)
   const detectedSetCode = params.setCode
@@ -1001,14 +1125,49 @@ export async function suggestScannerMatches(params: {
     if (best) {
       usedCardIds.add(best.cardId)
       suggestions.push({
-        label: suggestionLabel(0),
+        label: SET_CODE_SUGGESTION_LABEL,
         query: detectedSetCode,
         item: best,
       })
     }
   }
 
-  // 2) Variantes de nome (já com impressão do set code quando possível)
+  // 2) Match visual por pHash da arte (após set code, antes do nome)
+  if (params.visualMatches?.length) {
+    const distanceById = new Map(
+      params.visualMatches.map((match) => [match.cardId, match.distance]),
+    )
+    const visualIds = params.visualMatches
+      .map((match) => match.cardId)
+      .filter((id) => !usedCardIds.has(id))
+      .slice(0, 5)
+
+    if (visualIds.length > 0) {
+      const cards = await getCardsByIdsWithFallback('pt', visualIds)
+      const cardById = new Map(cards.map((card) => [card.id, card]))
+
+      for (const cardId of visualIds) {
+        if (suggestions.length >= 3) break
+        if (usedCardIds.has(cardId)) continue
+
+        const card = cardById.get(cardId)
+        if (!card) continue
+
+        const item = cardToCatalogItem(card, ocrName || card.name)
+        if (!item) continue
+
+        usedCardIds.add(cardId)
+        const distance = distanceById.get(cardId) ?? 0
+        suggestions.push({
+          label: VISUAL_SUGGESTION_LABEL,
+          query: `arte · ${distance} bits`,
+          item: withDetectedPrinting(item),
+        })
+      }
+    }
+  }
+
+  // 3) Variantes de nome (já com impressão do set code quando possível)
   for (let i = 0; i < namePools.length; i++) {
     if (suggestions.length >= 3) break
     const pool = namePools[i]
@@ -1030,7 +1189,7 @@ export async function suggestScannerMatches(params: {
     }
   }
 
-  // 3) Completar até 3 com o restante dos pools
+  // 4) Completar até 3 com o restante dos pools
   if (suggestions.length < 3) {
     const all = [
       ...setItems.map((item) => ({

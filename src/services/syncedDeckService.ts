@@ -865,7 +865,7 @@ export async function fetchCommunityMissingCardRanking(
       msg.includes('could not find')
     ) {
       throw new Error(
-        'Função de ranking não encontrada. Aplique a migration 007_community_missing_ranking.sql no Supabase.',
+        'Função de ranking não encontrada. Aplique a migration 009_community_missing_ranking.sql no Supabase.',
       )
     }
     throw new Error(error.message)

@@ -5,13 +5,25 @@ import {
   regionRatioToStyle,
   YGO_REGION_RATIOS,
 } from '@/utils/cardFrameDetector'
+import {
+  blurWarningMessage,
+  extremeBlurWarningMessage,
+  isExtremelyBlurry,
+  measureSharpness,
+  shouldWarnBlur,
+} from '@/utils/imageSharpness'
+import {
+  computeGuideFrameInVideoPixels,
+  computeGuideLayout,
+  type GuideLayout,
+} from '@/utils/scannerGuideLayout'
+import {
+  SCANNER_BURST_COUNT,
+  SCANNER_BURST_INTERVAL_MS,
+  type CardFrameRect,
+} from '@/services/cardScannerService'
 
-export interface CardFrameRect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
+export type { CardFrameRect }
 
 export interface CapturedFrame {
   fullCanvas: HTMLCanvasElement
@@ -20,6 +32,8 @@ export interface CapturedFrame {
   previewUrl: string
   /** camera = guia na tela · photo = upload (prioriza auto-enquadramento) */
   source?: 'camera' | 'photo'
+  /** Burst da câmera (ordenado por nitidez, inclui o frame principal) */
+  burstFrames?: CapturedFrame[]
 }
 
 interface ScannerCameraProps {
@@ -28,77 +42,12 @@ interface ScannerCameraProps {
   onIdentify: (frame: CapturedFrame) => void
 }
 
-/** Fallback quando não há DOM da moldura (ex.: upload de arquivo). */
+/** @deprecated Use computeGuideFrameInVideoPixels — mantido para compatibilidade */
 export function computeCardFrame(
   mediaWidth: number,
   mediaHeight: number,
 ): CardFrameRect {
-  const targetRatio = 59 / 86
-  let width = mediaWidth * 0.78
-  let height = width / targetRatio
-  if (height > mediaHeight * 0.88) {
-    height = mediaHeight * 0.88
-    width = height * targetRatio
-  }
-  return {
-    x: Math.round((mediaWidth - width) / 2),
-    y: Math.round((mediaHeight - height) / 2),
-    width: Math.round(width),
-    height: Math.round(height),
-  }
-}
-
-/**
- * Área real do vídeo dentro do elemento com object-fit: contain
- * (exclui as barras pretas).
- */
-function getContainedVideoContent(
-  video: HTMLVideoElement,
-): { offsetX: number; offsetY: number; scale: number } {
-  const elW = video.clientWidth
-  const elH = video.clientHeight
-  const vw = video.videoWidth
-  const vh = video.videoHeight
-  if (!elW || !elH || !vw || !vh) {
-    return { offsetX: 0, offsetY: 0, scale: 1 }
-  }
-  const scale = Math.min(elW / vw, elH / vh)
-  const dispW = vw * scale
-  const dispH = vh * scale
-  return {
-    offsetX: (elW - dispW) / 2,
-    offsetY: (elH - dispH) / 2,
-    scale,
-  }
-}
-
-/** Converte a moldura visível (DOM) para pixels do frame de vídeo. */
-export function mapGuideElementToVideoPixels(
-  video: HTMLVideoElement,
-  guideEl: HTMLElement,
-): CardFrameRect | null {
-  if (!video.videoWidth || !video.videoHeight) return null
-
-  const videoRect = video.getBoundingClientRect()
-  const guideRect = guideEl.getBoundingClientRect()
-  const { offsetX, offsetY, scale } = getContainedVideoContent(video)
-  if (scale <= 0) return null
-
-  const relX = guideRect.left - videoRect.left - offsetX
-  const relY = guideRect.top - videoRect.top - offsetY
-
-  const x = Math.round(relX / scale)
-  const y = Math.round(relY / scale)
-  const width = Math.round(guideRect.width / scale)
-  const height = Math.round(guideRect.height / scale)
-
-  // Clamp dentro do frame
-  const clampedX = Math.max(0, Math.min(x, video.videoWidth - 1))
-  const clampedY = Math.max(0, Math.min(y, video.videoHeight - 1))
-  const clampedW = Math.max(1, Math.min(width, video.videoWidth - clampedX))
-  const clampedH = Math.max(1, Math.min(height, video.videoHeight - clampedY))
-
-  return { x: clampedX, y: clampedY, width: clampedW, height: clampedH }
+  return computeGuideFrameInVideoPixels(mediaWidth, mediaHeight)
 }
 
 function captureVideoCanvas(video: HTMLVideoElement): HTMLCanvasElement | null {
@@ -130,6 +79,24 @@ function isCameraBusyError(err: unknown): boolean {
       message,
     )
   )
+}
+
+async function applyContinuousFocus(stream: MediaStream): Promise<void> {
+  const track = stream.getVideoTracks()[0]
+  if (!track?.applyConstraints) return
+
+  try {
+    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
+      focusMode?: string[]
+    }
+    if (caps?.focusMode?.includes('continuous')) {
+      await track.applyConstraints({
+        focusMode: 'continuous',
+      } as MediaTrackConstraints)
+    }
+  } catch {
+    // Dispositivo pode não suportar focusMode — segue sem
+  }
 }
 
 async function waitForVideoReady(video: HTMLVideoElement): Promise<void> {
@@ -164,16 +131,52 @@ export function ScannerCamera({
   identifying = false,
   onIdentify,
 }: ScannerCameraProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const guideRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const cameraGenRef = useRef(0)
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment')
   const [restartKey, setRestartKey] = useState(0)
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [captureWarning, setCaptureWarning] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [ready, setReady] = useState(false)
+  const [guideLayout, setGuideLayout] = useState<GuideLayout | null>(null)
+
+  const updateGuideLayout = useCallback(() => {
+    const video = videoRef.current
+    const container = containerRef.current
+    if (!video?.videoWidth || !container) return
+
+    setGuideLayout(
+      computeGuideLayout(
+        video.videoWidth,
+        video.videoHeight,
+        container.clientWidth,
+        container.clientHeight,
+      ),
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!ready) return
+
+    updateGuideLayout()
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateGuideLayout)
+      return () => window.removeEventListener('resize', updateGuideLayout)
+    }
+
+    const observer = new ResizeObserver(() => updateGuideLayout())
+    observer.observe(container)
+    window.addEventListener('resize', updateGuideLayout)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateGuideLayout)
+    }
+  }, [ready, updateGuideLayout, facingMode, restartKey])
 
   const restartCamera = useCallback(() => {
     setRestartKey((key) => key + 1)
@@ -207,9 +210,9 @@ export function ScannerCamera({
       setStarting(true)
       setCameraError(null)
       setReady(false)
+      setGuideLayout(null)
       stopActiveStream()
 
-      // Strict Mode (mount→unmount→mount) e reload: libera o device antes de pedir de novo
       await sleep(120)
       if (cancelled || gen !== cameraGenRef.current) return
 
@@ -221,8 +224,8 @@ export function ScannerCamera({
             audio: false,
             video: {
               facingMode: { ideal: facingMode },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
+              width: { ideal: 1920, min: 1280 },
+              height: { ideal: 1080, min: 720 },
             },
           })
           if (cancelled || gen !== cameraGenRef.current) {
@@ -238,19 +241,20 @@ export function ScannerCamera({
 
           streamRef.current = stream
           video.srcObject = stream
+          await applyContinuousFocus(stream)
           await waitForVideoReady(video)
           if (cancelled || gen !== cameraGenRef.current) return
 
           try {
             await video.play()
           } catch (playErr) {
-            // play() pode falhar em corrida de remount; se já há frames, segue
             if (!video.videoWidth) throw playErr
           }
 
           if (cancelled || gen !== cameraGenRef.current) return
           setReady(true)
           setStarting(false)
+          updateGuideLayout()
           return
         } catch (err) {
           lastError = err
@@ -285,25 +289,60 @@ export function ScannerCamera({
       cameraGenRef.current += 1
       stopActiveStream()
     }
-  }, [facingMode, restartKey])
+  }, [facingMode, restartKey, updateGuideLayout])
 
-  function handleIdentify() {
+  async function handleIdentify() {
     const video = videoRef.current
-    const guide = guideRef.current
     if (!video || !ready) return
 
-    const canvas = captureVideoCanvas(video)
-    if (!canvas) return
+    setCaptureWarning(null)
 
-    const frame =
-      (guide ? mapGuideElementToVideoPixels(video, guide) : null) ??
-      computeCardFrame(canvas.width, canvas.height)
+    const burst: CapturedFrame[] = []
+
+    for (let i = 0; i < SCANNER_BURST_COUNT; i++) {
+      const canvas = captureVideoCanvas(video)
+      if (!canvas) continue
+
+      const frame = computeGuideFrameInVideoPixels(canvas.width, canvas.height)
+
+      burst.push({
+        fullCanvas: canvas,
+        frame,
+        previewUrl: canvas.toDataURL('image/jpeg', 0.85),
+        source: 'camera',
+      })
+
+      if (i < SCANNER_BURST_COUNT - 1) {
+        await sleep(SCANNER_BURST_INTERVAL_MS)
+      }
+    }
+
+    if (burst.length === 0) {
+      setCaptureWarning(
+        'Não foi possível capturar a imagem. Aguarde a câmera carregar e tente de novo.',
+      )
+      return
+    }
+
+    const ranked = [...burst].sort(
+      (a, b) =>
+        measureSharpness(b.fullCanvas, b.frame) -
+        measureSharpness(a.fullCanvas, a.frame),
+    )
+    const best = ranked[0]
+
+    if (isExtremelyBlurry(best.fullCanvas, best.frame)) {
+      setCaptureWarning(extremeBlurWarningMessage('camera'))
+      return
+    }
+
+    if (shouldWarnBlur(best.fullCanvas, best.frame, 'camera')) {
+      setCaptureWarning(blurWarningMessage('camera'))
+    }
 
     onIdentify({
-      fullCanvas: canvas,
-      frame,
-      previewUrl: canvas.toDataURL('image/jpeg', 0.85),
-      source: 'camera',
+      ...best,
+      burstFrames: ranked,
     })
   }
 
@@ -325,9 +364,24 @@ export function ScannerCamera({
       }
       ctx.drawImage(img, 0, 0)
       const detected = detectCardFrame(canvas)
+      const frame =
+        detected ?? computeGuideFrameInVideoPixels(canvas.width, canvas.height)
+
+      setCaptureWarning(null)
+
+      if (isExtremelyBlurry(canvas, frame)) {
+        setCaptureWarning(extremeBlurWarningMessage('photo'))
+        URL.revokeObjectURL(url)
+        return
+      }
+
+      if (shouldWarnBlur(canvas, frame, 'photo')) {
+        setCaptureWarning(blurWarningMessage('photo'))
+      }
+
       onIdentify({
         fullCanvas: canvas,
-        frame: detected ?? computeCardFrame(canvas.width, canvas.height),
+        frame,
         previewUrl: canvas.toDataURL('image/jpeg', 0.85),
         source: 'photo',
       })
@@ -341,38 +395,50 @@ export function ScannerCamera({
 
   return (
     <div className="space-y-3">
-      <div className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-black">
+      <div
+        ref={containerRef}
+        className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-black"
+      >
         <video
           ref={videoRef}
           playsInline
           muted
+          onLoadedMetadata={updateGuideLayout}
           className="aspect-[3/4] w-full object-contain bg-black"
         />
 
-        {/* Moldura alinhada 1:1 com o crop do OCR via getBoundingClientRect */}
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-5">
-          <div
-            ref={guideRef}
-            className="relative aspect-[59/86] w-[78%] max-w-sm rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
-          >
-            {/* Mesmas proporções de YGO_REGION_RATIOS (OCR + overlay) */}
+        {guideLayout && (
+          <div className="pointer-events-none absolute inset-0">
             <div
-              className="absolute rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20"
-              style={regionRatioToStyle(YGO_REGION_RATIOS.name)}
-            />
-            <div
-              className="absolute rounded-md border border-dashed border-white/25 bg-white/5"
-              style={regionRatioToStyle(YGO_REGION_RATIOS.typeIcon)}
-            />
-            <div
-              className="absolute rounded-md border border-dashed border-amber-300/95 bg-amber-400/25"
-              style={regionRatioToStyle(YGO_REGION_RATIOS.setCode)}
-            />
-            <p className="absolute -bottom-8 left-0 right-0 text-center text-[11px] text-white/90">
-              Verde = nome · âmbar = set code · calibrado na carta real
+              className="absolute rounded-xl border-2 border-[var(--color-accent)]/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
+              style={{
+                left: guideLayout.guide.x,
+                top: guideLayout.guide.y,
+                width: guideLayout.guide.width,
+                height: guideLayout.guide.height,
+              }}
+            >
+              <div
+                className="absolute rounded-md border border-dashed border-emerald-300/90 bg-emerald-400/20"
+                style={regionRatioToStyle(YGO_REGION_RATIOS.name)}
+              />
+              <div
+                className="absolute rounded-md border border-dashed border-white/25 bg-white/5"
+                style={regionRatioToStyle(YGO_REGION_RATIOS.typeIcon)}
+              />
+              <div
+                className="absolute rounded-md border border-dashed border-amber-300/95 bg-amber-400/25"
+                style={regionRatioToStyle(YGO_REGION_RATIOS.setCode)}
+              />
+            </div>
+            <p
+              className="absolute left-0 right-0 text-center text-[11px] text-white/90"
+              style={{ top: guideLayout.guide.y + guideLayout.guide.height + 8 }}
+            >
+              Alinhe a carta na moldura · verde = nome · âmbar = set code
             </p>
           </div>
-        </div>
+        )}
 
         {(starting || !ready) && !cameraError && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-sm text-white">
@@ -387,15 +453,21 @@ export function ScannerCamera({
         </p>
       )}
 
+      {captureWarning && (
+        <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+          {captureWarning}
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
           disabled={busy}
-          onClick={handleIdentify}
+          onClick={() => void handleIdentify()}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Camera className="h-4 w-4" />
-          {identifying ? 'Identificando...' : 'Identificar carta'}
+          {identifying ? 'Identificando...' : `Identificar carta (${SCANNER_BURST_COUNT} fotos)`}
         </button>
 
         <button

@@ -3,7 +3,9 @@ import {
   extractCardNameCandidates,
   normalizeOcrCardName,
   normalizeSetCode,
+  scoreIdentifyResult,
   stripCardTypeFromName,
+  type IdentifyResult,
 } from '@/services/cardScannerService'
 import { getYgoTextRegions } from '@/utils/cardFrameDetector'
 import {
@@ -148,6 +150,45 @@ describe('nameSimilarity', () => {
   it('ranks exact names higher than unrelated ones', () => {
     expect(nameSimilarity('ICE BARRIER', 'Ice Barrier')).toBeGreaterThan(
       nameSimilarity('ICE BARRIER', 'Terror de Trishula'),
+    )
+  })
+})
+
+describe('scoreIdentifyResult', () => {
+  const base: IdentifyResult = {
+    text: '',
+    confidence: 40,
+    candidates: [],
+    setCodes: [],
+    detectedSetCode: null,
+    autoDetected: false,
+    perspectiveCorrected: false,
+    regions: {
+      frame: { x: 0, y: 0, width: 590, height: 860 },
+      name: { x: 0, y: 0, width: 100, height: 50 },
+      setCode: { x: 0, y: 0, width: 100, height: 30 },
+    },
+    nameBandPreviewUrl: '',
+    setCodePreviewUrl: '',
+    visualMatches: [],
+    artPHash: null,
+    artPreviewUrl: '',
+  }
+
+  it('prefers results with detected set code', () => {
+    const withSet: IdentifyResult = {
+      ...base,
+      detectedSetCode: 'BLVO-EN068',
+      setCodes: ['BLVO-EN068'],
+    }
+    const withName: IdentifyResult = {
+      ...base,
+      text: 'Ice Barrier',
+      candidates: ['Ice Barrier'],
+      confidence: 90,
+    }
+    expect(scoreIdentifyResult(withSet)).toBeGreaterThan(
+      scoreIdentifyResult(withName),
     )
   })
 })

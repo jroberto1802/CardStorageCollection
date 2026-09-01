@@ -38,6 +38,8 @@ export const YGO_REGION_RATIOS = {
   name: { x: 0.05, y: 0.048, w: 0.785, h: 0.058 } satisfies RegionRatio,
   typeIcon: { x: 0.845, y: 0.048, w: 0.12, h: 0.058 } satisfies RegionRatio,
   setCode: { x: 0.6, y: 0.718, w: 0.32, h: 0.038 } satisfies RegionRatio,
+  /** Caixa de ilustração (monstro/magia/armadilha) */
+  art: { x: 0.08, y: 0.11, w: 0.84, h: 0.57 } satisfies RegionRatio,
 } as const
 
 /** Bandas OCR do set code (principal = medida; extras = variação Spell/Trap). */
@@ -87,6 +89,11 @@ export function getYgoTextRegions(frame: CardFrameRect): CardTextRegions {
 /** Todas as bandas candidatas de set code para OCR. */
 export function getSetCodeBandCandidates(frame: CardFrameRect): CardFrameRect[] {
   return SET_CODE_BAND_RATIOS.map((r) => regionFromRatios(frame, r))
+}
+
+/** Recorte da arte para hash visual / comparação. */
+export function getArtRegion(frame: CardFrameRect): CardFrameRect {
+  return regionFromRatios(frame, YGO_REGION_RATIOS.art)
 }
 
 function clampFrame(
@@ -219,46 +226,28 @@ export function detectCardFrame(canvas: HTMLCanvasElement): CardFrameRect | null
   return frame
 }
 
-function frameIoU(a: CardFrameRect, b: CardFrameRect): number {
-  const x1 = Math.max(a.x, b.x)
-  const y1 = Math.max(a.y, b.y)
-  const x2 = Math.min(a.x + a.width, b.x + b.width)
-  const y2 = Math.min(a.y + a.height, b.y + b.height)
-  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1)
-  if (inter <= 0) return 0
-  const union = a.width * a.height + b.width * b.height - inter
-  return union > 0 ? inter / union : 0
-}
-
 export type CardCaptureSource = 'camera' | 'photo'
 
 /**
  * Resolve a moldura usada no OCR.
- * - camera: prioriza a moldura visível na UI
- * - photo: prioriza auto-detect / full-bleed (upload não tem guia alinhado)
+ * - camera: usa a moldura do guia (utilizador alinhou a carta)
+ * - photo: prioriza auto-detect / full-bleed
  */
 export function resolveCardFrame(
   canvas: HTMLCanvasElement,
   manualFrame: CardFrameRect,
   source: CardCaptureSource = 'camera',
 ): { frame: CardFrameRect; autoDetected: boolean } {
-  const auto = detectCardFrame(canvas)
-
-  if (source === 'photo') {
-    if (auto && isPlausibleCardFrame(auto, canvas.width, canvas.height)) {
-      return { frame: auto, autoDetected: true }
-    }
-    const fullBleed = detectFullBleedCardFrame(canvas)
-    if (fullBleed) return { frame: fullBleed, autoDetected: true }
+  if (source === 'camera') {
     return { frame: manualFrame, autoDetected: false }
   }
 
-  if (
-    auto &&
-    isPlausibleCardFrame(auto, canvas.width, canvas.height) &&
-    frameIoU(auto, manualFrame) >= 0.72
-  ) {
+  const auto = detectCardFrame(canvas)
+
+  if (auto && isPlausibleCardFrame(auto, canvas.width, canvas.height)) {
     return { frame: auto, autoDetected: true }
   }
+  const fullBleed = detectFullBleedCardFrame(canvas)
+  if (fullBleed) return { frame: fullBleed, autoDetected: true }
   return { frame: manualFrame, autoDetected: false }
 }

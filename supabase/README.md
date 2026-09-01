@@ -9,14 +9,18 @@
 5. Cole o conteúdo de `migrations/004_card_images_storage.sql` e execute (bucket **card-images** + leitura pública)
 6. Cole o conteúdo de `migrations/005_mdm_deck_sync.sql` e execute (decks sincronizados MDM + progresso retomável)
 7. Cole o conteúdo de `migrations/006_deck_side_zone.sql` e execute (zona **side** em `deck_cards`)
-8. Cole o conteúdo de `migrations/007_community_missing_ranking.sql` e execute (ranking de staples faltando na comunidade)
+8. Cole o conteúdo de `migrations/007_scanner_fuzzy_search.sql` e execute (busca fuzzy **pg_trgm** para o scanner)
+9. Cole o conteúdo de `migrations/008_card_art_hashes.sql` e execute (hashes **pHash** da arte para match visual no scanner)
+10. Cole o conteúdo de `migrations/009_community_missing_ranking.sql` e execute (ranking de staples faltando na comunidade)
 
 A migration `002` cria a tabela `collection_items` (inventário por impressão: card + set_code + raridade) com RLS por usuário.
 A migration `003` cria `decks` e `deck_cards` (construção de deck; 1 linha = 1 cópia).
 A migration `004` cria o bucket `card-images` no Storage (miniaturas do catálogo + full sob demanda).
 A migration `005` cria `synced_decks`, `synced_deck_cards` e `deck_sync_runs` (top decks Master Duel Meta).
 A migration `006` amplia `deck_cards.zone` para incluir `side` (Side Deck até 15).
-A migration `007` cria a função `get_community_missing_card_ranking` (top cartas do meta que você não possui).
+A migration `007` adiciona `name_compact`, índices **pg_trgm** e a função `search_cards_fuzzy` (busca tolerante a erros de OCR no scanner).
+A migration `008` cria `card_art_hashes` (pHash 64-bit da arte por `card_id` para reconhecimento visual no scanner).
+A migration `009` cria a função `get_community_missing_card_ranking` (top cartas do meta que você não possui).
 
 ## 2. Deploy das Edge Functions
 
@@ -60,6 +64,7 @@ npm run dev
 Em **Configurações**, use:
 1. **Sincronizar cards** (metadados)
 2. **Sincronizar miniaturas** (Storage; respeita limite soft ~900 MB no Free)
-3. **Sincronizar decks** (Master Duel Meta top-decks; retomável)
+3. **Sincronizar hashes visuais** (pHash da arte; necessário para match visual no scanner)
+4. **Sincronizar decks** (Master Duel Meta top-decks; retomável)
 
 Credenciais do app ficam em `.env.local` (já no `.gitignore`).
