@@ -13,11 +13,14 @@ import { useGridCardSize } from '@/hooks/useGridCardSize'
 import { getDistinctSetNames } from '@/services/catalogService'
 import { getUsdBrlRate } from '@/services/currencyService'
 import {
+  addToCollection,
   buildAlbumSlots,
   getOwnedSetOptions,
   listCollectionWithCards,
   removeFromCollection,
+  updateCollectionQuantity,
 } from '@/services/collectionService'
+import { albumSlotKey } from '@/components/collection/CollectionAlbumView'
 import {
   computeCollectionStats,
   matchesCollectionArchetype,
@@ -62,6 +65,7 @@ export function CollectionPage() {
   const setPickerRef = useRef<HTMLDivElement>(null)
   const [albumSlots, setAlbumSlots] = useState<AlbumSlot[]>([])
   const [albumLoading, setAlbumLoading] = useState(false)
+  const [albumBusySlotKey, setAlbumBusySlotKey] = useState<string | null>(null)
 
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebounce(query, 300)
@@ -118,6 +122,15 @@ export function CollectionPage() {
     } finally {
       setLoading(false)
     }
+  }, [language])
+
+  const refreshCollectionData = useCallback(async () => {
+    const [list, sets] = await Promise.all([
+      listCollectionWithCards(language),
+      getOwnedSetOptions(),
+    ])
+    setItems(list)
+    setOwnedSets(sets)
   }, [language])
 
   useEffect(() => {
@@ -308,6 +321,32 @@ export function CollectionPage() {
       await loadCollection()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao remover')
+    }
+  }
+
+  async function handleAlbumAdjustQuantity(slot: AlbumSlot, delta: 1 | -1) {
+    const key = albumSlotKey(slot)
+    setAlbumBusySlotKey(key)
+    setError(null)
+    try {
+      if (delta === 1) {
+        await addToCollection({
+          card_id: slot.cardId,
+          language: slot.language,
+          set_code: slot.setCode,
+          set_name: slot.setName,
+          set_rarity: slot.setRarity === '—' ? '' : slot.setRarity,
+          quantity: 1,
+        })
+      } else {
+        if (!slot.collectionItemId || slot.quantity <= 0) return
+        await updateCollectionQuantity(slot.collectionItemId, slot.quantity - 1)
+      }
+      await refreshCollectionData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao atualizar coleção')
+    } finally {
+      setAlbumBusySlotKey(null)
     }
   }
 
@@ -609,6 +648,8 @@ export function CollectionPage() {
           slots={albumSlots}
           setName={selectedSetName}
           loading={albumLoading}
+          busySlotKey={albumBusySlotKey}
+          onAdjustQuantity={(slot, delta) => void handleAlbumAdjustQuantity(slot, delta)}
         />
       )}
 

@@ -1,17 +1,26 @@
 import { Link } from 'react-router-dom'
+import { Loader2, Minus, Plus } from 'lucide-react'
 import type { AlbumSlot } from '@/types'
 import { buildCardDetailPath } from '@/utils/cardHelpers'
+
+export function albumSlotKey(slot: AlbumSlot): string {
+  return `${slot.cardId}-${slot.setCode}-${slot.setRarity}`
+}
 
 interface CollectionAlbumViewProps {
   slots: AlbumSlot[]
   setName: string
   loading: boolean
+  busySlotKey: string | null
+  onAdjustQuantity: (slot: AlbumSlot, delta: 1 | -1) => void
 }
 
 export function CollectionAlbumView({
   slots,
   setName,
   loading,
+  busySlotKey,
+  onAdjustQuantity,
 }: CollectionAlbumViewProps) {
   if (loading) {
     return (
@@ -73,67 +82,121 @@ export function CollectionAlbumView({
       </div>
 
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
-        {slots.map((slot) => (
-          <Link
-            key={`${slot.cardId}-${slot.setCode}-${slot.setRarity}`}
-            to={buildCardDetailPath(slot.cardId, {
-              lang: slot.language,
-              setCode: slot.setCode,
-              setRarity: slot.setRarity,
-              setName: slot.setName,
-            })}
-            title={
-              slot.ownedSetCode
-                ? `${slot.setCode} — ${slot.name} (você possui ${slot.ownedSetCode})`
-                : `${slot.setCode} — ${slot.name}`
-            }
-            className={[
-              'group relative overflow-hidden rounded-xl border bg-[var(--color-surface)] transition',
-              slot.owned
-                ? slot.ownedInAlbumSet
-                  ? 'border-[var(--color-accent)]/50 hover:border-[var(--color-accent)]'
-                  : 'border-[var(--color-danger)]/50 hover:border-[var(--color-danger)]'
-                : 'border-[var(--color-border)] opacity-45',
-            ].join(' ')}
-          >
-            <div className="aspect-[59/86] overflow-hidden bg-[var(--color-surface-2)]">
-              {slot.imageUrlSmall || slot.imageUrl ? (
-                <img
-                  src={slot.imageUrlSmall ?? slot.imageUrl ?? undefined}
-                  alt={slot.name}
-                  loading="lazy"
-                  className={[
-                    'h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]',
-                    slot.owned ? '' : 'grayscale',
-                  ].join(' ')}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center p-1 text-center text-[10px] text-[var(--color-muted)]">
-                  {slot.setCode}
-                </div>
-              )}
-            </div>
-            <div className="space-y-0.5 px-1.5 py-1">
-              <p
-                className="truncate font-mono text-[10px] font-semibold text-[var(--color-accent)]"
-                title={`Álbum: ${slot.setCode}`}
+        {slots.map((slot) => {
+          const key = albumSlotKey(slot)
+          const busy = busySlotKey === key
+          const canDecrement =
+            slot.ownedInAlbumSet && slot.quantity > 0 && Boolean(slot.collectionItemId)
+
+          return (
+            <article
+              key={key}
+              title={
+                slot.ownedSetCode
+                  ? `${slot.setCode} — ${slot.name} (você possui ${slot.ownedSetCode})`
+                  : `${slot.setCode} — ${slot.name}`
+              }
+              className={[
+                'group relative overflow-hidden rounded-xl border bg-[var(--color-surface)] transition',
+                slot.owned
+                  ? slot.ownedInAlbumSet
+                    ? 'border-[var(--color-accent)]/50 hover:border-[var(--color-accent)]'
+                    : 'border-[var(--color-danger)]/50 hover:border-[var(--color-danger)]'
+                  : 'border-[var(--color-border)] opacity-45',
+              ].join(' ')}
+            >
+              <Link
+                to={buildCardDetailPath(slot.cardId, {
+                  lang: slot.language,
+                  setCode: slot.setCode,
+                  setRarity: slot.setRarity,
+                  setName: slot.setName,
+                })}
+                className="relative block"
               >
-                {slot.setCode}
-              </p>
+                <div className="aspect-[59/86] overflow-hidden bg-[var(--color-surface-2)]">
+                  {slot.imageUrlSmall || slot.imageUrl ? (
+                    <img
+                      src={slot.imageUrlSmall ?? slot.imageUrl ?? undefined}
+                      alt={slot.name}
+                      loading="lazy"
+                      className={[
+                        'h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]',
+                        slot.owned ? '' : 'grayscale',
+                      ].join(' ')}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-1 text-center text-[10px] text-[var(--color-muted)]">
+                      {slot.setCode}
+                    </div>
+                  )}
+                </div>
+                {!slot.owned && (
+                  <div className="pointer-events-none absolute inset-0 bg-black/25" />
+                )}
+              </Link>
+
+              <div className="flex items-center justify-between gap-1 px-1.5 py-1">
+                <p
+                  className="min-w-0 truncate font-mono text-[10px] font-semibold text-[var(--color-accent)]"
+                  title={`Álbum: ${slot.setCode}`}
+                >
+                  {slot.setCode}
+                </p>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <button
+                    type="button"
+                    title={`Remover 1 · ${slot.setCode}`}
+                    disabled={busy || !canDecrement}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onAdjustQuantity(slot, -1)
+                    }}
+                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--color-border)] text-[var(--color-muted)] transition hover:border-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {busy ? (
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                    ) : (
+                      <Minus className="h-2.5 w-2.5" />
+                    )}
+                  </button>
+                  {slot.ownedInAlbumSet && slot.quantity > 0 ? (
+                    <span className="min-w-[1ch] text-center text-[9px] font-semibold tabular-nums text-[var(--color-text)]">
+                      {slot.quantity}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    title={`Adicionar 1 · ${slot.setCode}`}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onAdjustQuantity(slot, 1)
+                    }}
+                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--color-border)] text-[var(--color-muted)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {busy ? (
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                    ) : (
+                      <Plus className="h-2.5 w-2.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
               {slot.ownedSetCode && (
                 <p
-                  className="truncate font-mono text-[10px] font-semibold text-[var(--color-danger)]"
+                  className="truncate px-1.5 pb-1 font-mono text-[10px] font-semibold text-[var(--color-danger)]"
                   title={`Você possui: ${slot.ownedSetCode}`}
                 >
                   {slot.ownedSetCode}
                 </p>
               )}
-            </div>
-            {!slot.owned && (
-              <div className="pointer-events-none absolute inset-0 bg-black/25" />
-            )}
-          </Link>
-        ))}
+            </article>
+          )
+        })}
       </div>
     </div>
   )

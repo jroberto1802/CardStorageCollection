@@ -368,8 +368,8 @@ export async function buildAlbumSlots(params: {
       owned: Boolean(preferred),
       ownedInAlbumSet: Boolean(ownedInAlbum),
       ownedSetCode: !ownedInAlbum && ownedOther ? ownedOther.set_code : null,
-      quantity: preferred?.quantity ?? 0,
-      collectionItemId: preferred?.id ?? null,
+      quantity: ownedInAlbum?.quantity ?? 0,
+      collectionItemId: ownedInAlbum?.id ?? null,
     })
   }
 
