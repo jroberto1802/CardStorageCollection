@@ -133,6 +133,27 @@ export function CollectionPage() {
     setOwnedSets(sets)
   }, [language])
 
+  const reloadAlbumSlots = useCallback(
+    async (options?: { showLoading?: boolean }) => {
+      if (view !== 'album' || !selectedSetName) return
+      const showLoading = options?.showLoading ?? false
+      if (showLoading) setAlbumLoading(true)
+      try {
+        const slots = await buildAlbumSlots({
+          language,
+          setName: selectedSetName,
+        })
+        setAlbumSlots(slots)
+      } catch (err) {
+        setAlbumSlots([])
+        setError(err instanceof Error ? err.message : 'Falha ao montar álbum')
+      } finally {
+        if (showLoading) setAlbumLoading(false)
+      }
+    },
+    [view, selectedSetName, language],
+  )
+
   useEffect(() => {
     void loadCollection()
   }, [loadCollection])
@@ -161,31 +182,8 @@ export function CollectionPage() {
       return
     }
 
-    let mounted = true
-
-    async function loadAlbum() {
-      setAlbumLoading(true)
-      try {
-        const slots = await buildAlbumSlots({
-          language,
-          setName: selectedSetName,
-        })
-        if (mounted) setAlbumSlots(slots)
-      } catch (err) {
-        if (mounted) {
-          setAlbumSlots([])
-          setError(err instanceof Error ? err.message : 'Falha ao montar álbum')
-        }
-      } finally {
-        if (mounted) setAlbumLoading(false)
-      }
-    }
-
-    void loadAlbum()
-    return () => {
-      mounted = false
-    }
-  }, [view, selectedSetName, language, items])
+    void reloadAlbumSlots({ showLoading: true })
+  }, [view, selectedSetName, language, reloadAlbumSlots])
 
   const albumSetOptions = useMemo(() => {
     const q = debouncedSetSearch.trim().toLowerCase()
@@ -314,6 +312,32 @@ export function CollectionPage() {
 
   const collectionStats = useMemo(() => computeCollectionStats(items), [items])
 
+  function patchAlbumSlotOptimistic(slot: AlbumSlot, delta: 1 | -1): AlbumSlot {
+    if (delta === 1) {
+      return {
+        ...slot,
+        quantity: slot.quantity + 1,
+        owned: true,
+        ownedInAlbumSet: true,
+        ownedSetCode: null,
+      }
+    }
+
+    const nextQty = Math.max(0, slot.quantity - 1)
+    if (nextQty === 0) {
+      const hadOtherVersion = Boolean(slot.ownedSetCode)
+      return {
+        ...slot,
+        quantity: 0,
+        collectionItemId: null,
+        ownedInAlbumSet: false,
+        owned: hadOtherVersion,
+      }
+    }
+
+    return { ...slot, quantity: nextQty }
+  }
+
   async function handleRemove(id: string) {
     if (!window.confirm('Remover esta carta da coleção?')) return
     try {
@@ -326,8 +350,16 @@ export function CollectionPage() {
 
   async function handleAlbumAdjustQuantity(slot: AlbumSlot, delta: 1 | -1) {
     const key = albumSlotKey(slot)
+    const previousSlots = albumSlots
+
     setAlbumBusySlotKey(key)
     setError(null)
+    setAlbumSlots((current) =>
+      current.map((entry) =>
+        albumSlotKey(entry) === key ? patchAlbumSlotOptimistic(entry, delta) : entry,
+      ),
+    )
+
     try {
       if (delta === 1) {
         await addToCollection({
@@ -339,11 +371,19 @@ export function CollectionPage() {
           quantity: 1,
         })
       } else {
-        if (!slot.collectionItemId || slot.quantity <= 0) return
+        if (!slot.collectionItemId || slot.quantity <= 0) {
+          setAlbumSlots(previousSlots)
+          return
+        }
         await updateCollectionQuantity(slot.collectionItemId, slot.quantity - 1)
       }
-      await refreshCollectionData()
+
+      await Promise.all([
+        reloadAlbumSlots(),
+        refreshCollectionData(),
+      ])
     } catch (err) {
+      setAlbumSlots(previousSlots)
       setError(err instanceof Error ? err.message : 'Falha ao atualizar coleção')
     } finally {
       setAlbumBusySlotKey(null)
@@ -656,7 +696,12 @@ export function CollectionPage() {
       <AddToCollectionModal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        onAdded={() => void loadCollection()}
+        onAdded={() => {
+          void loadCollection()
+          if (view === 'album' && selectedSetName) {
+            void reloadAlbumSlots()
+          }
+        }}
       />
     </div>
   )
