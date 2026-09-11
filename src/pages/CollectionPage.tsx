@@ -362,7 +362,7 @@ export function CollectionPage() {
 
     try {
       if (delta === 1) {
-        await addToCollection({
+        const saved = await addToCollection({
           card_id: slot.cardId,
           language: slot.language,
           set_code: slot.setCode,
@@ -370,18 +370,60 @@ export function CollectionPage() {
           set_rarity: slot.setRarity === '—' ? '' : slot.setRarity,
           quantity: 1,
         })
+        // Confirma o slot com o retorno real (id + qty) sem depender do refresh
+        setAlbumSlots((current) =>
+          current.map((entry) =>
+            albumSlotKey(entry) === key
+              ? {
+                  ...entry,
+                  quantity: saved.quantity,
+                  collectionItemId: saved.id,
+                  owned: true,
+                  ownedInAlbumSet: true,
+                  ownedSetCode: null,
+                }
+              : entry,
+          ),
+        )
       } else {
         if (!slot.collectionItemId || slot.quantity <= 0) {
           setAlbumSlots(previousSlots)
           return
         }
-        await updateCollectionQuantity(slot.collectionItemId, slot.quantity - 1)
+        const updated = await updateCollectionQuantity(
+          slot.collectionItemId,
+          slot.quantity - 1,
+        )
+        setAlbumSlots((current) =>
+          current.map((entry) => {
+            if (albumSlotKey(entry) !== key) return entry
+            if (!updated) {
+              return {
+                ...entry,
+                quantity: 0,
+                collectionItemId: null,
+                ownedInAlbumSet: false,
+                owned: Boolean(entry.ownedSetCode),
+              }
+            }
+            return {
+              ...entry,
+              quantity: updated.quantity,
+              collectionItemId: updated.id,
+              owned: true,
+              ownedInAlbumSet: true,
+              ownedSetCode: null,
+            }
+          }),
+        )
       }
 
-      await Promise.all([
-        reloadAlbumSlots(),
-        refreshCollectionData(),
-      ])
+      // Refresh em background: se falhar, não desfaz a alteração já salva
+      void Promise.all([reloadAlbumSlots(), refreshCollectionData()]).catch(
+        (err) => {
+          console.warn('Falha ao sincronizar coleção após ajuste no álbum:', err)
+        },
+      )
     } catch (err) {
       setAlbumSlots(previousSlots)
       setError(err instanceof Error ? err.message : 'Falha ao atualizar coleção')

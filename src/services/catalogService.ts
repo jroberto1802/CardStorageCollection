@@ -720,14 +720,26 @@ export async function getCardsByIds(
 ): Promise<Card[]> {
   if (ids.length === 0) return []
 
-  const { data, error } = await supabase
-    .from('cards')
-    .select('*')
-    .eq('language', language)
-    .in('id', ids)
+  // PostgREST GET com .in() grande estoura a URL → "Bad Request"
+  const unique = [...new Set(ids.filter((id) => Number.isFinite(id)))]
+  const chunkSize = 80
+  const cards: Card[] = []
 
-  if (error) throw new Error(error.message)
-  return (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize)
+    const { data, error } = await supabase
+      .from('cards')
+      .select('*')
+      .eq('language', language)
+      .in('id', chunk)
+
+    if (error) throw new Error(error.message)
+    for (const row of data ?? []) {
+      cards.push(mapRow(row as Record<string, unknown>))
+    }
+  }
+
+  return cards
 }
 
 /** Resolve cartas preferindo o idioma pedido e completando com o outro */

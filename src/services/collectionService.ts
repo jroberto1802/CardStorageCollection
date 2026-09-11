@@ -147,11 +147,13 @@ export async function addToCollection(
   if (userError) throw new Error(userError.message)
   if (!user) throw new Error('Usuário não autenticado')
 
+  const setRarity = input.set_rarity === '—' ? '' : (input.set_rarity ?? '')
+
   // Reusa qualquer idioma já cadastrado para a mesma impressão
   const existing = await findCollectionItem({
     cardId: input.card_id,
     setCode: input.set_code,
-    setRarity: input.set_rarity,
+    setRarity,
   })
 
   if (existing) {
@@ -163,26 +165,58 @@ export async function addToCollection(
       .select('*')
       .single()
 
-    if (error) throw new Error(error.message)
+    if (error) throw new Error(formatCollectionError(error.message))
     return mapItem(data as Record<string, unknown>)
   }
 
-  const { data, error } = await supabase
-    .from('collection_items')
-    .insert({
-      user_id: user.id,
-      card_id: input.card_id,
-      language: input.language,
-      set_code: input.set_code,
-      set_name: input.set_name,
-      set_rarity: input.set_rarity,
-      quantity: input.quantity ?? 1,
-    })
-    .select('*')
-    .single()
+  const languagesToTry: AppLanguage[] = [input.language]
+  const other: AppLanguage = input.language === 'pt' ? 'en' : 'pt'
+  if (!languagesToTry.includes(other)) languagesToTry.push(other)
 
-  if (error) throw new Error(error.message)
-  return mapItem(data as Record<string, unknown>)
+  let lastError: string | null = null
+
+  for (const language of languagesToTry) {
+    const { data, error } = await supabase
+      .from('collection_items')
+      .insert({
+        user_id: user.id,
+        card_id: input.card_id,
+        language,
+        set_code: input.set_code,
+        set_name: input.set_name,
+        set_rarity: setRarity,
+        quantity: input.quantity ?? 1,
+      })
+      .select('*')
+      .single()
+
+    if (!error && data) {
+      return mapItem(data as Record<string, unknown>)
+    }
+
+    lastError = error?.message ?? 'Falha ao adicionar à coleção'
+
+    // FK (card_id, language) — tenta o outro idioma do catálogo
+    const isFk =
+      lastError.toLowerCase().includes('foreign key') ||
+      lastError.toLowerCase().includes('collection_items_card_fk')
+    if (!isFk) break
+  }
+
+  throw new Error(formatCollectionError(lastError ?? 'Falha ao adicionar à coleção'))
+}
+
+function formatCollectionError(message: string): string {
+  const lower = message.toLowerCase()
+  if (
+    lower.includes('payment required') ||
+    lower.includes('402') ||
+    lower.includes('quota') ||
+    lower.includes('exceeded')
+  ) {
+    return `${message} — verifique a cota do plano Free no Supabase (Usage).`
+  }
+  return message
 }
 
 export async function updateCollectionQuantity(
