@@ -524,10 +524,10 @@ export function SettingsPage() {
       <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-medium">Imagens (Storage)</h2>
+            <h2 className="text-lg font-medium">Imagens (Cloudflare R2)</h2>
             <p className="mt-1 text-sm text-[var(--color-muted)]">
-              Espelha miniaturas no Supabase Storage (plano Free: ~1 GB). Imagens full
-              são baixadas sob demanda ao abrir o detalhe da carta.
+              Espelha miniaturas no bucket R2 (egress gratuito). Também remigra URLs
+              antigas do Storage Supabase. Full sob demanda ao abrir o detalhe.
             </p>
           </div>
           <ImageIcon className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
@@ -535,12 +535,17 @@ export function SettingsPage() {
 
         <div className="mb-5 grid gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-2)] p-4 text-sm sm:grid-cols-3">
           <div>
-            <p className="text-[var(--color-muted)]">Uso estimado</p>
+            <p className="text-[var(--color-muted)]">Destino / limite soft</p>
             <p className="mt-1 font-medium">
               {loadingMeta
                 ? '...'
-                : `${formatBytes(imageStatus?.storage_bytes)} / ${formatBytes(imageStatus?.storage_soft_limit_bytes ?? 900 * 1024 * 1024)}`}
+                : imageStatus?.storage_provider === 'r2'
+                  ? `R2 · soft ${formatBytes(imageStatus?.storage_soft_limit_bytes ?? 9 * 1024 * 1024 * 1024)}`
+                  : `${formatBytes(imageStatus?.storage_bytes)} / ${formatBytes(imageStatus?.storage_soft_limit_bytes ?? 900 * 1024 * 1024)}`}
             </p>
+            {imageStatus?.message ? (
+              <p className="mt-1 text-xs text-[var(--color-muted)]">{imageStatus.message}</p>
+            ) : null}
           </div>
           <div>
             <p className="text-[var(--color-muted)]">Pendentes (amostra)</p>
@@ -558,8 +563,8 @@ export function SettingsPage() {
 
         {imageStatus?.near_quota && (
           <p className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-            Storage perto do limite soft (~900 MB). Evite espelhar mais miniaturas no
-            Free.
+            Limite soft de storage atingido. Evite espelhar mais miniaturas até liberar
+            espaço.
           </p>
         )}
 
@@ -598,10 +603,11 @@ export function SettingsPage() {
         </div>
 
         <p className="mt-3 text-xs text-[var(--color-muted)]">
-          Baixa cada miniatura 1× da YGOPRODeck e reescreve as URLs no banco. Rode em
-          lotes; pode levar bastante tempo na primeira execução. Depois, faça o deploy
-          da Edge Function <code>sync-card-images</code> e aplique a migration{' '}
-          <code>004_card_images_storage.sql</code>.
+          Baixa cada miniatura 1× (YGO ou Storage antigo) e grava no Cloudflare R2,
+          reescrevendo as URLs no banco. Configure os secrets R2 na Edge Function e faça
+          o deploy de <code>sync-card-images</code>. Depois da sync completa, esvazie o
+          bucket <code>card-images</code> no Storage Supabase (ver migration{' '}
+          <code>010_r2_cleanup_notes.sql</code>).
         </p>
       </section>
 

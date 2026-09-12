@@ -27,6 +27,7 @@ import {
 import {
   invokeMirrorCardFull,
   isYgoHostedUrl,
+  isSupabaseStorageImageUrl,
 } from '@/services/imageSyncService'
 import type { AppLanguage, Card, CardImage, CardSet, CollectionItem } from '@/types'
 import { getUsdBrlRate } from '@/services/currencyService'
@@ -122,7 +123,7 @@ export function CardDetailPage() {
         } else {
           // Full sob demanda: se ainda aponta para YGOPRODeck, espelha no Storage
           const primary = getPrimaryImage(data)
-          if (isYgoHostedUrl(primary.full)) {
+          if (isYgoHostedUrl(primary.full) || isSupabaseStorageImageUrl(primary.full)) {
             const mirror = await invokeMirrorCardFull({
               language: data.language,
               cardId: data.id,

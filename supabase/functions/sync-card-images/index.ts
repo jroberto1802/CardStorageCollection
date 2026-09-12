@@ -1,8 +1,10 @@
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
+import { AwsClient } from 'https://esm.sh/aws4fetch@1.0.20'
 
-const BUCKET = 'card-images'
 const YGO_HOST = 'images.ygoprodeck.com'
-const STORAGE_SOFT_LIMIT_BYTES = 900 * 1024 * 1024 // ~900 MB — margem no Free (1 GB)
+const SUPABASE_STORAGE_MARKER = '/storage/v1/object/public/card-images/'
+/** Soft limit R2 Free (~10 GB) com margem */
+const DEFAULT_R2_SOFT_LIMIT_BYTES = 9 * 1024 * 1024 * 1024
 const DEFAULT_BATCH_SIZE = 40
 const MAX_BATCH_SIZE = 80
 const DOWNLOAD_DELAY_MS = 120
@@ -10,6 +12,7 @@ const SCAN_PAGE_SIZE = 200
 
 type AppLanguage = 'en' | 'pt'
 type MirrorMode = 'small' | 'full' | 'status'
+type ImageFolder = 'small' | 'full'
 
 interface CardImage {
   id: number
@@ -34,6 +37,14 @@ interface RequestBody {
   after_id?: number
 }
 
+interface R2Config {
+  client: AwsClient
+  endpoint: string
+  bucket: string
+  publicBaseUrl: string
+  softLimitBytes: number
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
@@ -45,15 +56,6 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
-}
-
-function isYgoUrl(url: string | undefined | null): boolean {
-  if (!url) return false
-  return url.includes(YGO_HOST)
-}
-
-function publicObjectUrl(supabaseUrl: string, path: string): string {
-  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${path}`
 }
 
 function sleep(ms: number) {
@@ -70,55 +72,90 @@ function normalizeImages(value: unknown): CardImage[] {
   )
 }
 
-function cardNeedsSmallMirror(card: CardRow): boolean {
-  return normalizeImages(card.card_images).some((img) => isYgoUrl(img.image_url_small))
+function isYgoUrl(url: string | undefined | null): boolean {
+  if (!url) return false
+  return url.includes(YGO_HOST)
 }
 
-async function estimateStorageBytes(admin: SupabaseClient): Promise<number> {
-  let total = 0
-  for (const folder of ['small', 'full'] as const) {
-    let offset = 0
-    for (;;) {
-      const { data, error } = await admin.storage.from(BUCKET).list(folder, {
-        limit: 1000,
-        offset,
-      })
-      if (error || !data || data.length === 0) break
-      for (const item of data) {
-        total += item.metadata?.size ?? 0
-      }
-      if (data.length < 1000) break
-      offset += 1000
-    }
+function isSupabaseStorageUrl(url: string | undefined | null): boolean {
+  if (!url) return false
+  return url.includes(SUPABASE_STORAGE_MARKER)
+}
+
+function isR2Url(url: string | undefined | null, publicBaseUrl: string): boolean {
+  if (!url) return false
+  const base = publicBaseUrl.replace(/\/$/, '')
+  return url.startsWith(base)
+}
+
+/** Precisa espelhar: YGO ou antigo Storage Supabase (migração). */
+function needsMirror(url: string | undefined | null, publicBaseUrl: string): boolean {
+  if (!url) return false
+  if (isR2Url(url, publicBaseUrl)) return false
+  return isYgoUrl(url) || isSupabaseStorageUrl(url)
+}
+
+function cardNeedsSmallMirror(card: CardRow, publicBaseUrl: string): boolean {
+  return normalizeImages(card.card_images).some((img) =>
+    needsMirror(img.image_url_small, publicBaseUrl),
+  )
+}
+
+function loadR2Config(): R2Config {
+  const accountId = Deno.env.get('R2_ACCOUNT_ID')?.trim()
+  const accessKeyId = Deno.env.get('R2_ACCESS_KEY_ID')?.trim()
+  const secretAccessKey = Deno.env.get('R2_SECRET_ACCESS_KEY')?.trim()
+  const bucket = Deno.env.get('R2_BUCKET')?.trim()
+  const publicBaseUrl = Deno.env.get('R2_PUBLIC_BASE_URL')?.trim()?.replace(/\/$/, '')
+
+  if (!accountId || !accessKeyId || !secretAccessKey || !bucket || !publicBaseUrl) {
+    throw new Error(
+      'Secrets R2 ausentes. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET e R2_PUBLIC_BASE_URL.',
+    )
   }
-  return total
+
+  const softLimitRaw = Deno.env.get('R2_SOFT_LIMIT_BYTES')
+  const softLimitBytes = softLimitRaw
+    ? Number(softLimitRaw)
+    : DEFAULT_R2_SOFT_LIMIT_BYTES
+
+  return {
+    client: new AwsClient({
+      accessKeyId,
+      secretAccessKey,
+      service: 's3',
+      region: 'auto',
+    }),
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    bucket,
+    publicBaseUrl,
+    softLimitBytes: Number.isFinite(softLimitBytes) && softLimitBytes > 0
+      ? softLimitBytes
+      : DEFAULT_R2_SOFT_LIMIT_BYTES,
+  }
 }
 
-async function objectExists(
-  admin: SupabaseClient,
-  folder: 'small' | 'full',
-  fileName: string,
-): Promise<boolean> {
-  const { data, error } = await admin.storage.from(BUCKET).list(folder, {
-    search: fileName,
-    limit: 20,
+function publicObjectUrl(r2: R2Config, folder: ImageFolder, imageId: number): string {
+  return `${r2.publicBaseUrl}/${folder}/${imageId}.jpg`
+}
+
+async function objectExists(r2: R2Config, folder: ImageFolder, imageId: number): Promise<boolean> {
+  const path = `${folder}/${imageId}.jpg`
+  const response = await r2.client.fetch(`${r2.endpoint}/${r2.bucket}/${path}`, {
+    method: 'HEAD',
   })
-  if (error || !data) return false
-  return data.some((item) => item.name === fileName)
+  return response.ok
 }
 
 async function ensureUploaded(
-  admin: SupabaseClient,
-  supabaseUrl: string,
-  folder: 'small' | 'full',
+  r2: R2Config,
+  folder: ImageFolder,
   imageId: number,
   sourceUrl: string,
 ): Promise<{ url: string; uploaded: boolean; bytes: number }> {
-  const fileName = `${imageId}.jpg`
-  const path = `${folder}/${fileName}`
-  const publicUrl = publicObjectUrl(supabaseUrl, path)
+  const publicUrl = publicObjectUrl(r2, folder, imageId)
 
-  if (await objectExists(admin, folder, fileName)) {
+  if (await objectExists(r2, folder, imageId)) {
     return { url: publicUrl, uploaded: false, bytes: 0 }
   }
 
@@ -131,18 +168,22 @@ async function ensureUploaded(
 
   const bytes = new Uint8Array(await response.arrayBuffer())
   const contentType = response.headers.get('content-type') ?? 'image/jpeg'
+  const path = `${folder}/${imageId}.jpg`
 
-  const { error: uploadError } = await admin.storage.from(BUCKET).upload(path, bytes, {
-    contentType,
-    upsert: true,
-    cacheControl: '31536000',
+  const upload = await r2.client.fetch(`${r2.endpoint}/${r2.bucket}/${path}`, {
+    method: 'PUT',
+    body: bytes,
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
   })
 
-  if (uploadError) {
-    if (/already exists/i.test(uploadError.message)) {
-      return { url: publicUrl, uploaded: false, bytes: 0 }
-    }
-    throw new Error(uploadError.message)
+  if (!upload.ok) {
+    const detail = await upload.text().catch(() => '')
+    throw new Error(
+      `Upload R2 falhou (${upload.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+    )
   }
 
   return { url: publicUrl, uploaded: true, bytes: bytes.byteLength }
@@ -150,7 +191,7 @@ async function ensureUploaded(
 
 async function mirrorCardImages(
   admin: SupabaseClient,
-  supabaseUrl: string,
+  r2: R2Config,
   card: CardRow,
   mode: 'small' | 'full',
   imageId: number | undefined,
@@ -171,19 +212,18 @@ async function mirrorCardImages(
     const next = { ...img }
 
     if (mode === 'small') {
-      if (!isYgoUrl(img.image_url_small)) {
+      if (!needsMirror(img.image_url_small, r2.publicBaseUrl)) {
         skipped += 1
         nextImages.push(next)
         continue
       }
-      if (storageBytes.value >= STORAGE_SOFT_LIMIT_BYTES) {
+      if (storageBytes.value >= r2.softLimitBytes) {
         nextImages.push(next)
         continue
       }
       try {
         const result = await ensureUploaded(
-          admin,
-          supabaseUrl,
+          r2,
           'small',
           img.id,
           img.image_url_small!,
@@ -201,23 +241,17 @@ async function mirrorCardImages(
         nextImages.push(next)
         continue
       }
-      if (!isYgoUrl(img.image_url)) {
+      if (!needsMirror(img.image_url, r2.publicBaseUrl)) {
         skipped += 1
         nextImages.push(next)
         continue
       }
-      if (storageBytes.value >= STORAGE_SOFT_LIMIT_BYTES) {
+      if (storageBytes.value >= r2.softLimitBytes) {
         nextImages.push(next)
         continue
       }
       try {
-        const result = await ensureUploaded(
-          admin,
-          supabaseUrl,
-          'full',
-          img.id,
-          img.image_url!,
-        )
+        const result = await ensureUploaded(r2, 'full', img.id, img.image_url!)
         next.image_url = result.url
         storageBytes.value += result.bytes
         mirrored += 1
@@ -260,6 +294,7 @@ async function collectSmallBatch(
   language: AppLanguage,
   afterId: number,
   batchSize: number,
+  publicBaseUrl: string,
 ): Promise<{ cards: CardRow[]; nextAfterId: number; scanned: number; exhausted: boolean }> {
   const cards: CardRow[] = []
   let cursor = afterId
@@ -290,7 +325,7 @@ async function collectSmallBatch(
     cursor = page[page.length - 1].id
 
     for (const card of page) {
-      if (cardNeedsSmallMirror(card)) {
+      if (cardNeedsSmallMirror(card, publicBaseUrl)) {
         cards.push(card)
         if (cards.length >= batchSize) break
       }
@@ -302,8 +337,7 @@ async function collectSmallBatch(
     }
   }
 
-  const nextAfterId =
-    cards.length > 0 ? cards[cards.length - 1].id : cursor
+  const nextAfterId = cards.length > 0 ? cards[cards.length - 1].id : cursor
 
   return { cards, nextAfterId, scanned, exhausted }
 }
@@ -311,8 +345,8 @@ async function collectSmallBatch(
 async function countPendingSmallApproximate(
   admin: SupabaseClient,
   language: AppLanguage,
+  publicBaseUrl: string,
 ): Promise<{ pending_small: number | null; sample_scanned: number }> {
-  // Amostra as primeiras páginas para dar feedback na UI sem varrer 14k linhas.
   let pending = 0
   let scanned = 0
   let cursor = 0
@@ -331,14 +365,13 @@ async function countPendingSmallApproximate(
     scanned += data.length
     cursor = data[data.length - 1].id as number
     for (const row of data as CardRow[]) {
-      if (cardNeedsSmallMirror(row)) pending += 1
+      if (cardNeedsSmallMirror(row, publicBaseUrl)) pending += 1
     }
     if (data.length < SCAN_PAGE_SIZE) {
       return { pending_small: pending, sample_scanned: scanned }
     }
   }
 
-  // Ainda há mais páginas — retorna null para a UI mostrar "muitas pendentes"
   return { pending_small: pending > 0 ? null : 0, sample_scanned: scanned }
 }
 
@@ -377,6 +410,19 @@ Deno.serve(async (req) => {
       return jsonResponse({ success: false, error: 'Sessão inválida' }, 401)
     }
 
+    let r2: R2Config
+    try {
+      r2 = loadR2Config()
+    } catch (err) {
+      return jsonResponse(
+        {
+          success: false,
+          error: err instanceof Error ? err.message : 'Config R2 inválida',
+        },
+        500,
+      )
+    }
+
     const body = (await req.json().catch(() => ({}))) as RequestBody
     const mode: MirrorMode = body.mode ?? 'small'
     const language: AppLanguage =
@@ -388,39 +434,27 @@ Deno.serve(async (req) => {
     const afterId = typeof body.after_id === 'number' && body.after_id > 0 ? body.after_id : 0
 
     const admin = createClient(supabaseUrl, serviceRoleKey)
-    const storageBytes = { value: await estimateStorageBytes(admin) }
-    const nearQuota = storageBytes.value >= STORAGE_SOFT_LIMIT_BYTES
+    // Contador da sessão (não lista o bucket inteiro a cada request)
+    const storageBytes = { value: 0 }
+    const nearQuota = false
 
     if (mode === 'status') {
-      const approx = await countPendingSmallApproximate(admin, language)
+      const approx = await countPendingSmallApproximate(
+        admin,
+        language,
+        r2.publicBaseUrl,
+      )
       return jsonResponse({
         success: true,
         mode: 'status',
         language,
-        storage_bytes: storageBytes.value,
-        storage_soft_limit_bytes: STORAGE_SOFT_LIMIT_BYTES,
+        storage_provider: 'r2',
+        storage_bytes: null,
+        storage_soft_limit_bytes: r2.softLimitBytes,
         near_quota: nearQuota,
         pending_small: approx.pending_small,
         sample_scanned: approx.sample_scanned,
-      })
-    }
-
-    if (nearQuota) {
-      return jsonResponse({
-        success: true,
-        mode,
-        language,
-        mirrored: 0,
-        failed: 0,
-        skipped: 0,
-        cards_processed: 0,
-        has_more: false,
-        after_id: afterId,
-        storage_bytes: storageBytes.value,
-        storage_soft_limit_bytes: STORAGE_SOFT_LIMIT_BYTES,
-        stopped_for_quota: true,
-        message:
-          'Limite soft de Storage (~900 MB) atingido. Pare para não estourar o Free (1 GB).',
+        message: `Destino: Cloudflare R2 (${r2.bucket})`,
       })
     }
 
@@ -453,7 +487,13 @@ Deno.serve(async (req) => {
       nextAfterId = cards[0].id
       exhausted = true
     } else if (mode === 'small') {
-      const batch = await collectSmallBatch(admin, language, afterId, batchSize)
+      const batch = await collectSmallBatch(
+        admin,
+        language,
+        afterId,
+        batchSize,
+        r2.publicBaseUrl,
+      )
       cards = batch.cards
       nextAfterId = batch.nextAfterId
       exhausted = batch.exhausted
@@ -468,11 +508,11 @@ Deno.serve(async (req) => {
     const errors: string[] = []
 
     for (const card of cards) {
-      if (storageBytes.value >= STORAGE_SOFT_LIMIT_BYTES) break
+      if (storageBytes.value >= r2.softLimitBytes) break
 
       const result = await mirrorCardImages(
         admin,
-        supabaseUrl,
+        r2,
         card,
         mode === 'full' ? 'full' : 'small',
         body.image_id,
@@ -485,8 +525,7 @@ Deno.serve(async (req) => {
       if (result.error) errors.push(result.error)
     }
 
-    const stoppedForQuota = storageBytes.value >= STORAGE_SOFT_LIMIT_BYTES
-    // Continua enquanto a varredura do catálogo não chegou ao fim e há cota
+    const stoppedForQuota = storageBytes.value >= r2.softLimitBytes
     const hasMore = mode === 'small' && !stoppedForQuota && !exhausted
 
     let cardImages: CardImage[] | undefined
@@ -510,8 +549,9 @@ Deno.serve(async (req) => {
       cards_processed: cardsProcessed,
       has_more: hasMore,
       after_id: nextAfterId,
+      storage_provider: 'r2',
       storage_bytes: storageBytes.value,
-      storage_soft_limit_bytes: STORAGE_SOFT_LIMIT_BYTES,
+      storage_soft_limit_bytes: r2.softLimitBytes,
       stopped_for_quota: stoppedForQuota,
       card_images: cardImages,
       errors: errors.length ? errors.slice(0, 5) : undefined,

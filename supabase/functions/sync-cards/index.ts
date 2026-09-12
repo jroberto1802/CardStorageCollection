@@ -51,7 +51,8 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-const STORAGE_PUBLIC_MARKER = '/storage/v1/object/public/card-images/'
+const SUPABASE_STORAGE_MARKER = '/storage/v1/object/public/card-images/'
+const YGO_HOST = 'images.ygoprodeck.com'
 
 interface CardImageRow {
   id?: number
@@ -63,7 +64,11 @@ interface CardImageRow {
 
 function isHostedImageUrl(url: string | undefined | null): boolean {
   if (!url) return false
-  return url.includes(STORAGE_PUBLIC_MARKER)
+  // Já espelhada no R2 (URL pública configurada) ou ainda no Storage antigo
+  if (url.includes(SUPABASE_STORAGE_MARKER)) return true
+  if (url.includes(YGO_HOST)) return false
+  // R2 / CDN próprio: qualquer https que não seja YGO
+  return /^https?:\/\//i.test(url)
 }
 
 /** Preserva URLs já espelhadas no Storage para não reintroduzir hotlink YGO. */

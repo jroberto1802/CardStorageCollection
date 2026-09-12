@@ -7,7 +7,8 @@ import {
   type PHashHex,
   type VisualMatchCandidate,
 } from '@/utils/cardArtHash'
-import type { AppLanguage } from '@/types'
+import type { AppLanguage, CardImage } from '@/types'
+import { parseCardImages } from '@/utils/cardHelpers'
 
 const PAGE_SIZE = 1000
 const DEFAULT_BATCH_SIZE = 30
@@ -57,6 +58,13 @@ function hashFromCardImage(img: HTMLImageElement): PHashHex {
     height: canvas.height,
   }
   return computeArtPHash(canvas, frame)
+}
+
+function smallImageUrlFromCardImages(value: unknown): string | null {
+  const images = parseCardImages(value)
+  const first = images[0] as CardImage | undefined
+  const url = first?.image_url_small?.trim() || first?.image_url?.trim() || ''
+  return url || null
 }
 
 async function fetchHashPage(from: number): Promise<{ card_id: number; phash: string }[]> {
@@ -171,10 +179,10 @@ export async function syncCardArtHashesBatch(params: {
 
   const { data: cards, error: cardsError } = await supabase
     .from('cards')
-    .select('id, image_url_small')
+    .select('id, card_images')
     .eq('language', language)
     .gt('id', afterCardId)
-    .not('image_url_small', 'is', null)
+    .not('card_images', 'is', null)
     .order('id', { ascending: true })
     .limit(batchSize)
 
@@ -191,7 +199,7 @@ export async function syncCardArtHashesBatch(params: {
     }
   }
 
-  const rows = (cards ?? []) as { id: number; image_url_small: string | null }[]
+  const rows = (cards ?? []) as { id: number; card_images: unknown }[]
   if (rows.length === 0) {
     const status = await fetchCardArtHashStatus()
     return {
@@ -242,7 +250,7 @@ export async function syncCardArtHashesBatch(params: {
       continue
     }
 
-    const imageUrl = row.image_url_small?.trim()
+    const imageUrl = smallImageUrlFromCardImages(row.card_images)
     if (!imageUrl) {
       skipped += 1
       continue

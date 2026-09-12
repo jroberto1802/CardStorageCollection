@@ -81,3 +81,15 @@ export function isYgoHostedUrl(url: string | null | undefined): boolean {
   if (!url) return false
   return url.includes('images.ygoprodeck.com')
 }
+
+export function isSupabaseStorageImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  return url.includes('/storage/v1/object/public/card-images/')
+}
+
+/** URL já espelhada (R2 ou Storage antigo) — não precisa de mirror full sob demanda. */
+export function isMirroredImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  if (isYgoHostedUrl(url)) return false
+  return /^https?:\/\//i.test(url)
+}

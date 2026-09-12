@@ -28,7 +28,8 @@ export interface SyncCardImagesResponse {
   cards_processed?: number
   has_more?: boolean
   after_id?: number
-  storage_bytes?: number
+  storage_provider?: 'r2' | 'supabase'
+  storage_bytes?: number | null
   storage_soft_limit_bytes?: number
   stopped_for_quota?: boolean
   pending_small?: number | null
