@@ -25,6 +25,8 @@ export interface CardArtHashSyncResult {
   hasMore: boolean
   lastCardId: number
   totalHashes?: number
+  /** Motivo da primeira falha do lote (útil para diagnosticar CORS/404). */
+  lastError?: string
   error?: string
 }
 
@@ -241,6 +243,7 @@ export async function syncCardArtHashesBatch(params: {
   let failed = 0
   let skipped = 0
   let lastCardId = afterCardId
+  let lastError: string | undefined
 
   for (const row of rows) {
     lastCardId = row.id
@@ -266,6 +269,7 @@ export async function syncCardArtHashesBatch(params: {
 
       if (upsertError) {
         failed += 1
+        lastError ??= `Upsert card_art_hashes: ${upsertError.message}`
         continue
       }
 
@@ -273,8 +277,12 @@ export async function syncCardArtHashesBatch(params: {
       if (hashIndex) {
         hashIndex.set(row.id, phash)
       }
-    } catch {
+    } catch (err) {
       failed += 1
+      const message = err instanceof Error ? err.message : String(err)
+      lastError ??= message.includes('Falha ao carregar imagem')
+        ? `${message} (verifique CORS no bucket R2 e se a URL existe)`
+        : message
     }
   }
 
@@ -289,5 +297,6 @@ export async function syncCardArtHashesBatch(params: {
     hasMore: rows.length >= batchSize,
     lastCardId,
     totalHashes: status.totalHashes,
+    lastError,
   }
 }

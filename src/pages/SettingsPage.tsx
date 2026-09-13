@@ -152,7 +152,7 @@ export function SettingsPage() {
       for (;;) {
         if (stopImageSyncRef.current) {
           setImageMessage(
-            `Sincronização de miniaturas interrompida. ${totalMirrored} imagens espelhadas.`,
+            `Sincronização de imagens interrompida. ${totalMirrored} imagens espelhadas.`,
           )
           break
         }
@@ -160,11 +160,11 @@ export function SettingsPage() {
         const result = await invokeSyncCardImagesSmall({
           language,
           afterId,
-          batchSize: 40,
+          batchSize: 20,
         })
 
         if (!result.success) {
-          setImageError(result.error ?? 'Falha ao espelhar miniaturas')
+          setImageError(result.error ?? 'Falha ao espelhar imagens')
           break
         }
 
@@ -191,14 +191,14 @@ export function SettingsPage() {
         if (result.stopped_for_quota) {
           setImageMessage(
             result.message ??
-              `Limite soft de Storage atingido (${formatBytes(lastStorage)}). ${totalMirrored} miniaturas espelhadas.`,
+              `Limite soft de Storage atingido (${formatBytes(lastStorage)}). ${totalMirrored} imagens espelhadas.`,
           )
           break
         }
 
         if (!result.has_more) {
           setImageMessage(
-            `Miniaturas sincronizadas: ${totalMirrored} espelhadas` +
+            `Imagens sincronizadas (small + full): ${totalMirrored} espelhadas` +
               (totalFailed ? `, ${totalFailed} falhas` : '') +
               `. Uso estimado: ${formatBytes(lastStorage)}.`,
           )
@@ -257,6 +257,10 @@ export function SettingsPage() {
         totalFailed += result.failed
         totalSkipped += result.skipped
         afterCardId = result.lastCardId
+
+        if (result.lastError) {
+          setHashError(result.lastError)
+        }
 
         setHashProgress({
           synced: totalSynced,
@@ -526,8 +530,9 @@ export function SettingsPage() {
           <div>
             <h2 className="text-lg font-medium">Imagens (Cloudflare R2)</h2>
             <p className="mt-1 text-sm text-[var(--color-muted)]">
-              Espelha miniaturas no bucket R2 (egress gratuito). Também remigra URLs
-              antigas do Storage Supabase. Full sob demanda ao abrir o detalhe.
+              Espelha miniaturas e imagens full no bucket R2 (egress gratuito). Também
+              remigra URLs antigas do Storage Supabase. Cartas sem full no R2 são
+              reparadas ao abrir o detalhe.
             </p>
           </div>
           <ImageIcon className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
@@ -563,7 +568,7 @@ export function SettingsPage() {
 
         {imageStatus?.near_quota && (
           <p className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-            Limite soft de storage atingido. Evite espelhar mais miniaturas até liberar
+            Limite soft de storage atingido. Evite espelhar mais imagens até liberar
             espaço.
           </p>
         )}
@@ -588,7 +593,7 @@ export function SettingsPage() {
             className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${imageSyncing ? 'animate-spin' : ''}`} />
-            {imageSyncing ? 'Espelhando miniaturas...' : 'Sincronizar miniaturas'}
+            {imageSyncing ? 'Espelhando imagens...' : 'Sincronizar imagens (small + full)'}
           </button>
 
           {imageSyncing && (
@@ -603,11 +608,11 @@ export function SettingsPage() {
         </div>
 
         <p className="mt-3 text-xs text-[var(--color-muted)]">
-          Baixa cada miniatura 1× (YGO ou Storage antigo) e grava no Cloudflare R2,
-          reescrevendo as URLs no banco. Configure os secrets R2 na Edge Function e faça
-          o deploy de <code>sync-card-images</code>. Depois da sync completa, esvazie o
-          bucket <code>card-images</code> no Storage Supabase (ver migration{' '}
-          <code>010_r2_cleanup_notes.sql</code>).
+          Baixa miniatura e full (YGO ou Storage antigo), grava no Cloudflare R2 e
+          reescreve as URLs no banco. Lotes menores (~20 cartas) porque sobem 2 arquivos
+          por arte. Configure os secrets R2 e o deploy de <code>sync-card-images</code>.
+          Depois da sync completa, esvazie o bucket <code>card-images</code> no Storage
+          Supabase (ver <code>010_r2_cleanup_notes.sql</code>).
         </p>
       </section>
 
@@ -681,9 +686,9 @@ export function SettingsPage() {
         </div>
 
         <p className="mt-3 text-xs text-[var(--color-muted)]">
-          Rode primeiro a sincronização de miniaturas. Cada lote baixa imagens do Storage
-          e calcula o pHash no navegador (~25 cartas por vez). Aplique a migration{' '}
-          <code>008_card_art_hashes.sql</code> antes de usar.
+          Rode primeiro a sincronização de miniaturas (R2). O navegador baixa as
+          miniaturas com CORS — configure a política CORS no bucket R2 (ver README).
+          Aplique a migration <code>008_card_art_hashes.sql</code> antes de usar.
         </p>
       </section>
 

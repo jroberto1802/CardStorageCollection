@@ -42,7 +42,7 @@ npx supabase functions deploy sync-mdm-decks --project-ref ytbnhmqwcrjkglauromc 
 ```
 
 - `sync-cards` — metadados do catálogo (preserva URLs já espelhadas no R2/Storage)
-- `sync-card-images` — espelha `image_url_small` no **Cloudflare R2**; `mode=full` no detalhe
+- `sync-card-images` — espelha `image_url_small` + `image_url` (full) no **Cloudflare R2**; `mode=full` também no detalhe
 - `sync-mdm-decks` — sincroniza top decks do Master Duel Meta em lotes retomáveis
 
 As variáveis `SUPABASE_URL`, `SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY`
@@ -64,6 +64,30 @@ No Dashboard: **Project → Edge Functions → sync-card-images → Secrets** (o
 
 No bucket R2: habilite **Public access** (r2.dev) ou conecte um **Custom Domain**.
 
+### CORS no R2 (obrigatório para hashes / canvas no navegador)
+
+Sem CORS, a sync de hashes falha 100% (`crossOrigin=anonymous`). No Dashboard:
+
+**R2 → bucket `card-images` → Settings → CORS Policy → Add CORS policy** e cole:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173"
+    ],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
+
+Inclua também a origem do deploy de produção (ex.: `https://seu-app.vercel.app`).
+Salve e rode de novo **Sincronizar hashes visuais**.
+
 Permissões do API token: Object Read & Write no bucket (ou Admin no account R2).
 
 ```bash
@@ -79,7 +103,7 @@ npx supabase functions deploy sync-card-images --project-ref ytbnhmqwcrjkglaurom
 npx supabase functions deploy sync-cards --project-ref ytbnhmqwcrjkglauromc --use-api
 ```
 
-Depois: Configurações → **Sincronizar miniaturas** (PT e EN). Ao terminar, rode as
+Depois: Configurações → **Sincronizar imagens (small + full)** (PT e EN). Ao terminar, rode as
 queries de `010_r2_cleanup_notes.sql` e **Empty bucket** em Storage → `card-images`.
 
 A `service_role` **não** deve ir no frontend nem no `.env.local`.
@@ -99,7 +123,7 @@ npm run dev
 
 Em **Configurações**, use:
 1. **Sincronizar cards** (metadados)
-2. **Sincronizar miniaturas** (Storage; respeita limite soft ~900 MB no Free)
+2. **Sincronizar imagens** (small + full no R2)
 3. **Sincronizar hashes visuais** (pHash da arte; necessário para match visual no scanner)
 4. **Sincronizar decks** (Master Duel Meta top-decks; retomável)
 

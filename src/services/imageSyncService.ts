@@ -31,10 +31,11 @@ export async function invokeSyncCardImagesSmall(params: {
     'sync-card-images',
     {
       body: {
+        // Lote: espelha image_url_small + image_url (full) no R2
         mode: 'small',
         language: params.language,
         after_id: params.afterId ?? 0,
-        batch_size: params.batchSize ?? 40,
+        batch_size: params.batchSize ?? 20,
       },
     },
   )

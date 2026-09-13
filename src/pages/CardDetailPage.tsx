@@ -26,8 +26,6 @@ import {
 } from '@/services/collectionService'
 import {
   invokeMirrorCardFull,
-  isYgoHostedUrl,
-  isSupabaseStorageImageUrl,
 } from '@/services/imageSyncService'
 import type { AppLanguage, Card, CardImage, CardSet, CollectionItem } from '@/types'
 import { getUsdBrlRate } from '@/services/currencyService'
@@ -121,9 +119,9 @@ export function CardDetailPage() {
           setError('Carta não encontrada neste idioma.')
           setCard(null)
         } else {
-          // Full sob demanda: se ainda aponta para YGOPRODeck, espelha no Storage
+          // Garante full+small no R2 (repara Storage apagado / objeto ausente via YGO)
           const primary = getPrimaryImage(data)
-          if (isYgoHostedUrl(primary.full) || isSupabaseStorageImageUrl(primary.full)) {
+          if (primary.full || primary.small) {
             const mirror = await invokeMirrorCardFull({
               language: data.language,
               cardId: data.id,

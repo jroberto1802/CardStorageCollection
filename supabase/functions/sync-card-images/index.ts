@@ -96,9 +96,13 @@ function needsMirror(url: string | undefined | null, publicBaseUrl: string): boo
 }
 
 function cardNeedsSmallMirror(card: CardRow, publicBaseUrl: string): boolean {
-  return normalizeImages(card.card_images).some((img) =>
-    needsMirror(img.image_url_small, publicBaseUrl),
-  )
+  return normalizeImages(card.card_images).some((img) => {
+    const small = img.image_url_small
+    const full = img.image_url
+    if (!small || needsMirror(small, publicBaseUrl)) return true
+    if (!full || needsMirror(full, publicBaseUrl)) return true
+    return false
+  })
 }
 
 function loadR2Config(): R2Config {
@@ -139,12 +143,63 @@ function publicObjectUrl(r2: R2Config, folder: ImageFolder, imageId: number): st
   return `${r2.publicBaseUrl}/${folder}/${imageId}.jpg`
 }
 
+/** Fonte YGO estável — usada quando Storage antigo foi esvaziado ou a URL original falha. */
+function ygoSourceUrl(folder: ImageFolder, imageId: number): string {
+  if (folder === 'small') {
+    return `https://${YGO_HOST}/images/cards_small/${imageId}.jpg`
+  }
+  return `https://${YGO_HOST}/images/cards/${imageId}.jpg`
+}
+
 async function objectExists(r2: R2Config, folder: ImageFolder, imageId: number): Promise<boolean> {
   const path = `${folder}/${imageId}.jpg`
   const response = await r2.client.fetch(`${r2.endpoint}/${r2.bucket}/${path}`, {
     method: 'HEAD',
   })
   return response.ok
+}
+
+async function downloadImageBytes(
+  folder: ImageFolder,
+  imageId: number,
+  sourceUrl: string,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const candidates: string[] = []
+  const pushUnique = (url: string | undefined | null) => {
+    const trimmed = url?.trim()
+    if (!trimmed) return
+    if (!candidates.includes(trimmed)) candidates.push(trimmed)
+  }
+
+  pushUnique(sourceUrl)
+  // Storage apagado / URL R2 404 / qualquer falha → cai no YGO
+  pushUnique(ygoSourceUrl(folder, imageId))
+
+  let lastError = 'Download falhou'
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'image/jpeg,image/*,*/*' },
+      })
+      if (!response.ok) {
+        lastError = `Download falhou (${response.status}) para ${url}`
+        continue
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (bytes.byteLength < 100) {
+        lastError = `Arquivo muito pequeno em ${url}`
+        continue
+      }
+      return {
+        bytes,
+        contentType: response.headers.get('content-type') ?? 'image/jpeg',
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  throw new Error(lastError)
 }
 
 async function ensureUploaded(
@@ -159,15 +214,7 @@ async function ensureUploaded(
     return { url: publicUrl, uploaded: false, bytes: 0 }
   }
 
-  const response = await fetch(sourceUrl, {
-    headers: { Accept: 'image/jpeg,image/*,*/*' },
-  })
-  if (!response.ok) {
-    throw new Error(`Download falhou (${response.status}) para ${sourceUrl}`)
-  }
-
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  const contentType = response.headers.get('content-type') ?? 'image/jpeg'
+  const { bytes, contentType } = await downloadImageBytes(folder, imageId, sourceUrl)
   const path = `${folder}/${imageId}.jpg`
 
   const upload = await r2.client.fetch(`${r2.endpoint}/${r2.bucket}/${path}`, {
@@ -187,6 +234,23 @@ async function ensureUploaded(
   }
 
   return { url: publicUrl, uploaded: true, bytes: bytes.byteLength }
+}
+
+/** Precisa subir: sem URL, YGO/Storage, ou URL R2 cujo objeto sumiu do bucket. */
+async function shouldUploadImage(
+  r2: R2Config,
+  folder: ImageFolder,
+  imageId: number,
+  url: string | undefined | null,
+): Promise<boolean> {
+  if (!url?.trim()) {
+    return !(await objectExists(r2, folder, imageId))
+  }
+  if (needsMirror(url, r2.publicBaseUrl)) return true
+  if (isR2Url(url, r2.publicBaseUrl)) {
+    return !(await objectExists(r2, folder, imageId))
+  }
+  return false
 }
 
 async function mirrorCardImages(
@@ -212,8 +276,18 @@ async function mirrorCardImages(
     const next = { ...img }
 
     if (mode === 'small') {
-      if (!needsMirror(img.image_url_small, r2.publicBaseUrl)) {
-        skipped += 1
+      const source = img.image_url_small || img.image_url || ygoSourceUrl('small', img.id)
+      if (!(await shouldUploadImage(r2, 'small', img.id, img.image_url_small))) {
+        // Garante URL pública R2 no banco mesmo se o objeto já existia
+        if (img.image_url_small && isR2Url(img.image_url_small, r2.publicBaseUrl)) {
+          skipped += 1
+        } else if (await objectExists(r2, 'small', img.id)) {
+          next.image_url_small = publicObjectUrl(r2, 'small', img.id)
+          changed = true
+          mirrored += 1
+        } else {
+          skipped += 1
+        }
         nextImages.push(next)
         continue
       }
@@ -222,12 +296,7 @@ async function mirrorCardImages(
         continue
       }
       try {
-        const result = await ensureUploaded(
-          r2,
-          'small',
-          img.id,
-          img.image_url_small!,
-        )
+        const result = await ensureUploaded(r2, 'small', img.id, source)
         next.image_url_small = result.url
         storageBytes.value += result.bytes
         mirrored += 1
@@ -241,22 +310,54 @@ async function mirrorCardImages(
         nextImages.push(next)
         continue
       }
-      if (!needsMirror(img.image_url, r2.publicBaseUrl)) {
-        skipped += 1
-        nextImages.push(next)
-        continue
-      }
       if (storageBytes.value >= r2.softLimitBytes) {
         nextImages.push(next)
         continue
       }
+
+      // No detalhe: repara full e small (Storage apagado / objeto R2 ausente)
       try {
-        const result = await ensureUploaded(r2, 'full', img.id, img.image_url!)
-        next.image_url = result.url
-        storageBytes.value += result.bytes
-        mirrored += 1
-        changed = true
-        await sleep(DOWNLOAD_DELAY_MS)
+        let touched = false
+        const fullSource = img.image_url || ygoSourceUrl('full', img.id)
+        if (await shouldUploadImage(r2, 'full', img.id, img.image_url)) {
+          const result = await ensureUploaded(r2, 'full', img.id, fullSource)
+          next.image_url = result.url
+          storageBytes.value += result.bytes
+          mirrored += 1
+          touched = true
+          await sleep(DOWNLOAD_DELAY_MS)
+        } else if (img.image_url && isR2Url(img.image_url, r2.publicBaseUrl)) {
+          skipped += 1
+        } else if (await objectExists(r2, 'full', img.id)) {
+          next.image_url = publicObjectUrl(r2, 'full', img.id)
+          mirrored += 1
+          touched = true
+        }
+
+        const smallSource =
+          img.image_url_small || img.image_url || ygoSourceUrl('small', img.id)
+        if (await shouldUploadImage(r2, 'small', img.id, img.image_url_small)) {
+          const result = await ensureUploaded(r2, 'small', img.id, smallSource)
+          next.image_url_small = result.url
+          storageBytes.value += result.bytes
+          mirrored += 1
+          touched = true
+          await sleep(DOWNLOAD_DELAY_MS)
+        } else if (
+          img.image_url_small &&
+          isR2Url(img.image_url_small, r2.publicBaseUrl)
+        ) {
+          // ok
+        } else if (await objectExists(r2, 'small', img.id)) {
+          next.image_url_small = publicObjectUrl(r2, 'small', img.id)
+          mirrored += 1
+          touched = true
+        }
+
+        if (touched) changed = true
+        else if (!img.image_url || !isR2Url(img.image_url, r2.publicBaseUrl)) {
+          // nada a fazer
+        }
       } catch {
         failed += 1
       }
@@ -510,12 +611,13 @@ Deno.serve(async (req) => {
     for (const card of cards) {
       if (storageBytes.value >= r2.softLimitBytes) break
 
+      // Lote (mode=small) e detalhe (mode=full) espelham small + full
       const result = await mirrorCardImages(
         admin,
         r2,
         card,
-        mode === 'full' ? 'full' : 'small',
-        body.image_id,
+        'full',
+        mode === 'full' ? body.image_id : undefined,
         storageBytes,
       )
       mirrored += result.mirrored
