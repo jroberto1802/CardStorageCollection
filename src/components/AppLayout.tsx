@@ -89,7 +89,14 @@ export function AppLayout() {
                 Scanner
               </span>
             </NavLink>
-            <NavLink to="/decks" className={linkClass}>
+            <NavLink
+              to="/decks"
+              className={({ isActive }) =>
+                linkClass({
+                  isActive: isActive || pathname.startsWith('/characters'),
+                })
+              }
+            >
               <span className="inline-flex items-center gap-1.5">
                 <Layers3 className="h-4 w-4" />
                 Decks
@@ -198,7 +205,11 @@ export function AppLayout() {
               </NavLink>
               <NavLink
                 to="/decks"
-                className={mobileNavClass}
+                className={({ isActive }) =>
+                  mobileNavClass({
+                    isActive: isActive || pathname.startsWith('/characters'),
+                  })
+                }
                 onClick={() => setNavOpen(false)}
               >
                 <Layers3 className="h-4 w-4" />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Layers3, Loader2, Plus, Trash2 } from 'lucide-react'
+import { DeckSectionTabs } from '@/components/deck/DeckSectionTabs'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
   createDeck,
@@ -67,9 +68,10 @@ export function DecksPage() {
 
   return (
     <div className="space-y-6">
+      <DeckSectionTabs />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Decks</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Meus decks</h1>
           <p className="mt-1 text-sm text-[var(--color-muted)]">
             Monte decks com qualquer carta do catálogo — não é necessário possuí-las.
           </p>

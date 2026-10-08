@@ -10,6 +10,9 @@ import { CardDetailPage } from '@/pages/CardDetailPage'
 import { CollectionPage } from '@/pages/CollectionPage'
 import { DecksPage } from '@/pages/DecksPage'
 import { DeckBuilderPage } from '@/pages/DeckBuilderPage'
+import { CharactersPage } from '@/pages/CharactersPage'
+import { CharacterDetailPage } from '@/pages/CharacterDetailPage'
+import { CharacterDeckPage } from '@/pages/CharacterDeckPage'
 import { CommunityDecksPage } from '@/pages/CommunityDecksPage'
 import { CommunityDeckDetailPage } from '@/pages/CommunityDeckDetailPage'
 import { CardScannerPage } from '@/pages/CardScannerPage'
@@ -35,6 +38,12 @@ export default function App() {
                 />
                 <Route path="/decks" element={<DecksPage />} />
                 <Route path="/decks/:deckId" element={<DeckBuilderPage />} />
+                <Route path="/characters" element={<CharactersPage />} />
+                <Route path="/characters/:slug" element={<CharacterDetailPage />} />
+                <Route
+                  path="/characters/:slug/decks/:deckSlug"
+                  element={<CharacterDeckPage />}
+                />
                 <Route path="/settings" element={<SettingsPage />} />
               </Route>
             </Route>

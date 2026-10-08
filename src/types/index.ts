@@ -430,3 +430,96 @@ export interface CommunityMissingCardRank {
   imageUrlSmall: string | null
 }
 
+export interface Anime {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  release_date: string | null
+  end_date: string | null
+  cover_image: string | null
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface Character {
+  id: string
+  anime_id: string
+  name: string
+  japanese_name: string | null
+  slug: string
+  description: string | null
+  image: string | null
+  is_duelist: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AnimeDeck {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  image: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CharacterDeckLink {
+  id: string
+  character_id: string
+  deck_id: string
+  anime_arc: string | null
+  season: string | null
+  description: string | null
+  is_primary: boolean
+  sort_order: number
+}
+
+export interface CharacterListItem extends Character {
+  anime: Pick<Anime, 'id' | 'name' | 'slug' | 'sort_order'>
+  deckCount: number
+}
+
+export interface CharacterDeckSummary extends AnimeDeck {
+  linkId: string
+  animeArc: string | null
+  season: string | null
+  linkDescription: string | null
+  isPrimary: boolean
+  sortOrder: number
+  cardCount: number
+}
+
+export interface CharacterDetail extends Character {
+  anime: Anime
+  decks: CharacterDeckSummary[]
+}
+
+export interface AnimeDeckCardView {
+  id: string
+  quantity: number
+  zone: DeckZone
+  isAce: boolean
+  isSignature: boolean
+  sortOrder: number
+  cardId: number
+  language: AppLanguage
+  name: string
+  type: string | null
+  imageUrl: string | null
+  imageUrlSmall: string | null
+}
+
+export interface AnimeDeckDetail extends AnimeDeck {
+  characterName: string
+  characterSlug: string
+  animeName: string
+  animeSlug: string
+  arc: string | null
+  linkDescription: string | null
+  cards: AnimeDeckCardView[]
+}
+
