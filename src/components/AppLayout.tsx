@@ -34,7 +34,7 @@ export function AppLayout() {
   const { user, signOut } = useAuth()
   const { pathname } = useLocation()
   const wide =
-    pathname.startsWith('/decks/') || pathname.startsWith('/community/')
+    pathname.includes('/decks/') || pathname.startsWith('/community/')
 
   const [navOpen, setNavOpen] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)

@@ -1,62 +1,115 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
+import { DeckCardPreviewModal } from '@/components/deck/DeckCardPreviewModal'
+import { useSettings } from '@/contexts/SettingsContext'
+import { listCollectionItems } from '@/services/collectionService'
 import { getCharacterDeck } from '@/services/characterService'
-import type { AnimeDeckCardView, AnimeDeckDetail, DeckZone } from '@/types'
+import {
+  allocateOwnedCopies,
+  computeOwnership,
+  ownedQuantityByCardId,
+} from '@/services/syncedDeckService'
+import type { AnimeDeckCardView, AnimeDeckDetail, AppLanguage, DeckZone } from '@/types'
 
 const ZONES: { zone: DeckZone; label: string }[] = [
-  { zone: 'main', label: 'Main Deck' },
+  { zone: 'main', label: 'Deck principal' },
   { zone: 'extra', label: 'Extra Deck' },
   { zone: 'side', label: 'Side Deck' },
 ]
 
-function CardTile({ card }: { card: AnimeDeckCardView }) {
+function ZoneSection({
+  title,
+  zone,
+  cards,
+  ownedByCard,
+  onCardClick,
+}: {
+  title: string
+  zone: DeckZone
+  cards: AnimeDeckCardView[]
+  ownedByCard: number[]
+  onCardClick: (card: AnimeDeckCardView) => void
+}) {
+  const indexed = cards
+    .map((card, index) => ({ card, ownedCopies: ownedByCard[index] ?? 0 }))
+    .filter((entry) => entry.card.zone === zone)
+
+  if (indexed.length === 0) return null
+
+  const copies: Array<{ card: AnimeDeckCardView; slotOwned: boolean }> = []
+  for (const { card, ownedCopies } of indexed) {
+    for (let i = 0; i < card.quantity; i += 1) {
+      copies.push({ card, slotOwned: i < ownedCopies })
+    }
+  }
+
+  const ownedSlots = copies.filter((copy) => copy.slotOwned).length
+
   return (
-    <Link
-      to={`/cards/${card.cardId}?lang=${card.language}`}
-      className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] transition hover:border-[var(--color-accent)]"
-    >
-      <div className="aspect-[59/86] bg-[var(--color-surface-2)]">
-        {card.imageUrlSmall || card.imageUrl ? (
-          <img
-            src={card.imageUrlSmall ?? card.imageUrl ?? undefined}
-            alt={card.name}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center px-2 text-center text-xs text-[var(--color-muted)]">
-            Sem imagem
-          </div>
-        )}
+    <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]/80 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold tracking-wide">{title}</h3>
+        <span className="rounded-md bg-[var(--color-accent)]/20 px-2 py-0.5 text-sm font-bold text-[var(--color-accent)]">
+          {copies.length}
+        </span>
+        <span className="text-xs text-[var(--color-muted)]">
+          Possui {ownedSlots}/{copies.length}
+        </span>
       </div>
-      <div className="space-y-1 p-2">
-        <p className="line-clamp-2 text-xs font-semibold leading-snug">{card.name}</p>
-        <p className="text-[11px] text-[var(--color-muted)]">
-          x{card.quantity}
-          {card.type ? ` · ${card.type}` : ''}
-        </p>
-        <div className="flex flex-wrap gap-1">
-          {card.isAce && (
-            <span className="rounded bg-[var(--color-accent)]/20 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)]">
-              Ace
-            </span>
-          )}
-          {card.isSignature && (
-            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
-              Assinatura
-            </span>
-          )}
-        </div>
+      <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-8 md:grid-cols-10">
+        {copies.map(({ card, slotOwned }, index) => {
+          const marks = [
+            card.isAce ? 'ace' : null,
+            card.isSignature ? 'assinatura' : null,
+            slotOwned ? null : 'não possui',
+          ]
+            .filter(Boolean)
+            .join(', ')
+
+          return (
+            <button
+              key={`${card.id}-${index}`}
+              type="button"
+              onClick={() => onCardClick(card)}
+              title={`${card.name}${marks ? ` (${marks})` : ''} — clique para detalhe`}
+              className={[
+                'relative overflow-hidden rounded-md border bg-[var(--color-surface-2)] text-left transition',
+                slotOwned
+                  ? 'border-[var(--color-accent)]/40'
+                  : 'border-[var(--color-border)] opacity-40',
+                'cursor-pointer hover:border-[var(--color-accent)] hover:ring-1 hover:ring-[var(--color-accent)]',
+              ].join(' ')}
+            >
+              {card.imageUrlSmall || card.imageUrl ? (
+                <img
+                  src={card.imageUrlSmall ?? card.imageUrl ?? undefined}
+                  alt={card.name}
+                  className="aspect-[59/86] w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex aspect-[59/86] items-center justify-center p-1 text-center text-[9px] text-[var(--color-muted)]">
+                  {card.name}
+                </div>
+              )}
+            </button>
+          )
+        })}
       </div>
-    </Link>
+    </section>
   )
 }
 
 export function CharacterDeckPage() {
   const { slug, deckSlug } = useParams()
+  const { language } = useSettings()
   const [deck, setDeck] = useState<AnimeDeckDetail | null>(null)
+  const [ownedQty, setOwnedQty] = useState<Map<number, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [previewCardId, setPreviewCardId] = useState<number | null>(null)
+  const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
 
   useEffect(() => {
     let mounted = true
@@ -65,9 +118,13 @@ export function CharacterDeckPage() {
       setLoading(true)
       setError(null)
       try {
-        const data = await getCharacterDeck({ characterSlug: slug, deckSlug })
+        const [data, items] = await Promise.all([
+          getCharacterDeck({ characterSlug: slug, deckSlug }),
+          listCollectionItems().catch(() => []),
+        ])
         if (!mounted) return
         setDeck(data)
+        setOwnedQty(ownedQuantityByCardId(items))
         if (!data) setError('Deck não encontrado para este personagem.')
       } catch (err) {
         if (!mounted) return
@@ -82,17 +139,46 @@ export function CharacterDeckPage() {
     }
   }, [slug, deckSlug])
 
-  const byZone = useMemo(() => {
-    const map = new Map<DeckZone, AnimeDeckCardView[]>()
-    for (const zone of ZONES) map.set(zone.zone, [])
+  const ownedByCard = useMemo(() => {
+    if (!deck) return []
+    return allocateOwnedCopies(
+      deck.cards.map((card) => ({
+        card_id: card.cardId,
+        quantity: card.quantity,
+        zone: card.zone,
+      })),
+      ownedQty,
+    )
+  }, [deck, ownedQty])
+
+  const ownership = useMemo(() => {
+    if (!deck) return { ownedCount: 0, totalCount: 0, unresolvedCount: 0 }
+    return computeOwnership(
+      deck.cards.map((card) => ({ cardId: card.cardId, quantity: card.quantity })),
+      ownedQty,
+    )
+  }, [deck, ownedQty])
+
+  const pct =
+    ownership.totalCount > 0
+      ? Math.round((ownership.ownedCount / ownership.totalCount) * 100)
+      : 0
+
+  const zoneCounts = useMemo(() => {
+    const counts: Record<DeckZone, number> = { main: 0, extra: 0, side: 0 }
     for (const card of deck?.cards ?? []) {
-      map.get(card.zone)?.push(card)
+      counts[card.zone] += card.quantity
     }
-    return map
+    return counts
   }, [deck])
 
   if (loading) {
-    return <p className="text-sm text-[var(--color-muted)]">Carregando deck...</p>
+    return (
+      <p className="inline-flex items-center gap-2 text-sm text-[var(--color-muted)]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Carregando deck...
+      </p>
+    )
   }
 
   if (error || !deck) {
@@ -113,57 +199,79 @@ export function CharacterDeckPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <Link
-        to={`/characters/${deck.characterSlug}`}
-        className="inline-flex items-center gap-2 text-sm text-[var(--color-muted)] hover:text-[var(--color-accent)]"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {deck.characterName}
-      </Link>
-
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">{deck.name}</h1>
+    <div className="space-y-6">
+      <div className="min-w-0">
+        <Link
+          to={`/characters/${deck.characterSlug}`}
+          className="mb-2 inline-flex items-center gap-2 text-sm text-[var(--color-muted)] hover:text-[var(--color-accent)]"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {deck.characterName}
+        </Link>
+        <h1 className="text-2xl font-semibold tracking-tight">{deck.name}</h1>
         <p className="mt-1 text-sm text-[var(--color-muted)]">
           {deck.characterName} · {deck.animeName}
           {deck.arc ? ` · ${deck.arc}` : ''}
         </p>
-        {(deck.description || deck.linkDescription) && (
-          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--color-muted)]">
-            {deck.linkDescription || deck.description}
-          </p>
-        )}
       </div>
 
-      {deck.cards.length === 0 && (
+      {deck.cards.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-12 text-center">
           <p className="text-sm text-[var(--color-muted)]">
-            Nenhuma carta cadastrada neste deck ainda. A tabela de cartas do deck já
-            está pronta para receber o Main, Extra e Side.
+            Nenhuma carta cadastrada neste deck ainda.
           </p>
         </div>
+      ) : (
+        <>
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+            <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <p className="text-xs text-[var(--color-muted)]">Cartas que você possui</p>
+                <p className="text-lg font-semibold">
+                  {ownership.ownedCount}
+                  <span className="text-[var(--color-muted)]">/{ownership.totalCount}</span>
+                  <span className="ml-2 text-sm font-normal text-[var(--color-muted)]">
+                    ({pct}%)
+                  </span>
+                </p>
+              </div>
+              <p className="text-sm text-[var(--color-muted)]">
+                Main {zoneCounts.main} · Extra {zoneCounts.extra}
+                {zoneCounts.side > 0 ? ` · Side ${zoneCounts.side}` : ''}
+              </p>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-[var(--color-surface-2)]">
+              <div
+                className="h-full rounded-full bg-[var(--color-accent)]"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {ZONES.map(({ zone, label }) => (
+              <ZoneSection
+                key={zone}
+                title={label}
+                zone={zone}
+                cards={deck.cards}
+                ownedByCard={ownedByCard}
+                onCardClick={(card) => {
+                  setPreviewCardId(card.cardId)
+                  setPreviewLanguage(card.language ?? language)
+                }}
+              />
+            ))}
+          </div>
+        </>
       )}
 
-      {ZONES.map(({ zone, label }) => {
-        const cards = byZone.get(zone) ?? []
-        if (deck.cards.length > 0 && cards.length === 0) return null
-        if (deck.cards.length === 0) return null
-        return (
-          <section key={zone} className="space-y-3">
-            <h2 className="text-sm font-semibold tracking-wide uppercase">
-              {label}
-              <span className="ml-2 font-normal text-[var(--color-muted)]">
-                {cards.reduce((sum, card) => sum + card.quantity, 0)}
-              </span>
-            </h2>
-            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
-              {cards.map((card) => (
-                <CardTile key={card.id} card={card} />
-              ))}
-            </div>
-          </section>
-        )
-      })}
+      <DeckCardPreviewModal
+        open={previewCardId != null}
+        cardId={previewCardId}
+        language={previewLanguage}
+        onClose={() => setPreviewCardId(null)}
+      />
     </div>
   )
 }
