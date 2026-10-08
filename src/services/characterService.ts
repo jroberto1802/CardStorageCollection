@@ -78,7 +78,7 @@ export async function getCharacterBySlug(
         id, anime_arc, season, description, is_primary, sort_order,
         anime_decks (
           id, name, slug, description, image, created_at, updated_at,
-          anime_deck_cards ( id )
+          anime_deck_cards ( card_id, zone )
         )
       )
     `,
@@ -101,11 +101,11 @@ export async function getCharacterBySlug(
     sort_order: number
     anime_decks:
       | (CharacterDetail['decks'][number] & {
-          anime_deck_cards?: { id: string }[]
+          anime_deck_cards?: { card_id: number; zone: string }[]
         })
       | Array<
           CharacterDetail['decks'][number] & {
-            anime_deck_cards?: { id: string }[]
+            anime_deck_cards?: { card_id: number; zone: string }[]
           }
         >
       | null
@@ -116,6 +116,7 @@ export async function getCharacterBySlug(
       const deck = asOne(link.anime_decks)
       if (!deck) return null
       const cards = deck.anime_deck_cards ?? []
+      const uniqueCards = new Set(cards.map((card) => `${card.zone}:${card.card_id}`))
       return {
         id: deck.id,
         name: deck.name,
@@ -130,7 +131,7 @@ export async function getCharacterBySlug(
         linkDescription: link.description,
         isPrimary: link.is_primary,
         sortOrder: link.sort_order,
-        cardCount: cards.length,
+        cardCount: uniqueCards.size,
       }
     })
     .filter((deck): deck is CharacterDetail['decks'][number] => deck !== null)
@@ -178,9 +179,28 @@ interface DeckCardRow {
     | null
 }
 
+/** Uma linha por carta e zona. O seed grava a mesma quantidade em cada idioma. */
+function collapseDeckLanguages(
+  cards: AnimeDeckCardView[],
+  language: AppLanguage,
+): AnimeDeckCardView[] {
+  const byKey = new Map<string, AnimeDeckCardView>()
+  for (const card of cards) {
+    const key = `${card.zone}:${card.cardId}`
+    const current = byKey.get(key)
+    if (!current || (card.language === language && current.language !== language)) {
+      byKey.set(key, card)
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
+  )
+}
+
 export async function getCharacterDeck(params: {
   characterSlug: string
   deckSlug: string
+  language: AppLanguage
 }): Promise<AnimeDeckDetail | null> {
   const { data, error } = await supabase
     .from('character_decks')
@@ -245,8 +265,8 @@ export async function getCharacterDeck(params: {
   const anime = character ? asOne(character.animes) : null
   if (!character || !deck || !anime) return null
 
-  const cards = (deck.anime_deck_cards ?? [])
-    .flatMap((row) => {
+  const cards = collapseDeckLanguages(
+    (deck.anime_deck_cards ?? []).flatMap((row) => {
       const card = asOne(row.cards)
       if (!card) return []
       const images = parseCardImages(card.card_images)
@@ -265,8 +285,9 @@ export async function getCharacterDeck(params: {
         imageUrlSmall: images[0]?.image_url_small ?? images[0]?.image_url ?? null,
       }
       return [view]
-    })
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+    }),
+    params.language,
+  )
 
   return {
     id: deck.id,

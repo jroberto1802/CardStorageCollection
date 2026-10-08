@@ -119,7 +119,11 @@ export function CharacterDeckPage() {
       setError(null)
       try {
         const [data, items] = await Promise.all([
-          getCharacterDeck({ characterSlug: slug, deckSlug }),
+          getCharacterDeck({
+            characterSlug: slug,
+            deckSlug,
+            language,
+          }),
           listCollectionItems().catch(() => []),
         ])
         if (!mounted) return
@@ -137,7 +141,7 @@ export function CharacterDeckPage() {
     return () => {
       mounted = false
     }
-  }, [slug, deckSlug])
+  }, [slug, deckSlug, language])
 
   const ownedByCard = useMemo(() => {
     if (!deck) return []
