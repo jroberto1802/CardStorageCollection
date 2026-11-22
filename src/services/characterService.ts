@@ -7,8 +7,10 @@ import type {
   CharacterDetail,
   CharacterListItem,
   DeckZone,
+  ResolvedAnimeDeckCard,
 } from '@/types'
 import { parseCardImages } from '@/utils/cardHelpers'
+import { applyLocalizedCards, type LocalizedCard } from '@/utils/characterView'
 
 function asOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null
@@ -30,7 +32,7 @@ export async function listCharacters(): Promise<CharacterListItem[]> {
     .from('characters')
     .select(
       `
-      id, anime_id, name, japanese_name, slug, description, image, is_duelist, sort_order, created_at, updated_at,
+      id, anime_id, name, japanese_name, slug, description, image, image_small, series, is_duelist, sort_order, created_at, updated_at,
       animes ( id, name, slug, sort_order ),
       character_decks ( id )
     `,
@@ -39,7 +41,7 @@ export async function listCharacters(): Promise<CharacterListItem[]> {
 
   if (error) throw new Error(error.message)
 
-  return (data ?? []).flatMap((row) => {
+  const items = (data ?? []).flatMap((row) => {
     const anime = asOne(
       row.animes as CharacterListItem['anime'] | CharacterListItem['anime'][] | null,
     )
@@ -54,6 +56,8 @@ export async function listCharacters(): Promise<CharacterListItem[]> {
         slug: row.slug,
         description: row.description,
         image: row.image,
+        image_small: row.image_small,
+        series: row.series,
         is_duelist: row.is_duelist,
         sort_order: row.sort_order,
         created_at: row.created_at,
@@ -63,6 +67,11 @@ export async function listCharacters(): Promise<CharacterListItem[]> {
       },
     ]
   })
+
+  // sort_order reinicia em cada série: agrupa por série (ordem do anime) e depois por personagem.
+  return items.sort(
+    (a, b) => a.anime.sort_order - b.anime.sort_order || a.sort_order - b.sort_order,
+  )
 }
 
 export async function getCharacterBySlug(
@@ -75,10 +84,10 @@ export async function getCharacterBySlug(
       *,
       animes (*),
       character_decks (
-        id, anime_arc, season, description, is_primary, sort_order,
+        id, anime_arc, season, description, label, is_primary, sort_order,
         anime_decks (
           id, name, slug, description, image, created_at, updated_at,
-          anime_deck_cards ( card_id, zone )
+          anime_deck_cards ( card_id, zone, quantity )
         )
       )
     `,
@@ -97,15 +106,16 @@ export async function getCharacterBySlug(
     anime_arc: string | null
     season: string | null
     description: string | null
+    label: string | null
     is_primary: boolean
     sort_order: number
     anime_decks:
       | (CharacterDetail['decks'][number] & {
-          anime_deck_cards?: { card_id: number; zone: string }[]
+          anime_deck_cards?: { card_id: number | null; zone: string; quantity: number }[]
         })
       | Array<
           CharacterDetail['decks'][number] & {
-            anime_deck_cards?: { card_id: number; zone: string }[]
+            anime_deck_cards?: { card_id: number | null; zone: string; quantity: number }[]
           }
         >
       | null
@@ -116,7 +126,15 @@ export async function getCharacterBySlug(
       const deck = asOne(link.anime_decks)
       if (!deck) return null
       const cards = deck.anime_deck_cards ?? []
-      const uniqueCards = new Set(cards.map((card) => `${card.zone}:${card.card_id}`))
+      const cardCount = cards.reduce((sum, card) => sum + card.quantity, 0)
+      const zoneCounts: Record<DeckZone, number> = { main: 0, extra: 0, side: 0 }
+      for (const card of cards) {
+        if (card.zone in zoneCounts) zoneCounts[card.zone as DeckZone] += card.quantity
+      }
+      const unresolvedCount = cards.reduce(
+        (sum, card) => sum + (card.card_id === null ? card.quantity : 0),
+        0,
+      )
       return {
         id: deck.id,
         name: deck.name,
@@ -129,9 +147,13 @@ export async function getCharacterBySlug(
         animeArc: link.anime_arc,
         season: link.season,
         linkDescription: link.description,
+        label: link.label,
         isPrimary: link.is_primary,
         sortOrder: link.sort_order,
-        cardCount: uniqueCards.size,
+        cardCount,
+        unresolvedCount,
+        zoneCounts,
+        lines: cards.map((card) => ({ cardId: card.card_id, quantity: card.quantity })),
       }
     })
     .filter((deck): deck is CharacterDetail['decks'][number] => deck !== null)
@@ -145,6 +167,8 @@ export async function getCharacterBySlug(
     slug: data.slug,
     description: data.description,
     image: data.image,
+    image_small: data.image_small,
+    series: data.series,
     is_duelist: data.is_duelist,
     sort_order: data.sort_order,
     created_at: data.created_at,
@@ -154,6 +178,68 @@ export async function getCharacterBySlug(
   }
 }
 
+/** O import grava só language='en'; busca nome/imagem no idioma atual (fallback: en). */
+async function fetchLocalizedCards(
+  ids: number[],
+  language: AppLanguage,
+): Promise<Map<number, LocalizedCard>> {
+  const map = new Map<number, LocalizedCard>()
+  if (language === 'en' || ids.length === 0) return map
+  const { data, error } = await supabase
+    .from('cards')
+    .select('id, name, type, card_images')
+    .eq('language', language)
+    .in('id', [...new Set(ids)])
+  if (error || !data) {
+    console.warn('Falha ao buscar cartas no idioma do app; usando inglês.', error?.message)
+    return map
+  }
+  for (const row of data) {
+    const images = parseCardImages(row.card_images)
+    map.set(row.id as number, {
+      name: row.name as string,
+      type: (row.type as string | null) ?? null,
+      imageUrl: images[0]?.image_url ?? null,
+      imageUrlSmall: images[0]?.image_url_small ?? images[0]?.image_url ?? null,
+    })
+  }
+  return map
+}
+
+export interface CharacterNav {
+  slug: string
+  name: string
+  series: string | null
+  decks: Array<{ slug: string; name: string; label: string | null }>
+}
+
+/** Select enxuto (sem cartas): série e decks irmãos para breadcrumb e alternador A/B. */
+export async function getCharacterNav(slug: string): Promise<CharacterNav | null> {
+  const { data, error } = await supabase
+    .from('characters')
+    .select('slug, name, series, character_decks ( label, sort_order, anime_decks ( slug, name ) )')
+    .eq('slug', slug)
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  if (!data) return null
+
+  const links = (data.character_decks ?? []) as Array<{
+    label: string | null
+    sort_order: number
+    anime_decks: { slug: string; name: string } | Array<{ slug: string; name: string }> | null
+  }>
+  const decks = links
+    .flatMap((link) => {
+      const deck = asOne(link.anime_decks)
+      return deck ? [{ slug: deck.slug, name: deck.name, label: link.label, sortOrder: link.sort_order }] : []
+    })
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map(({ slug: deckSlug, name, label }) => ({ slug: deckSlug, name, label }))
+
+  return { slug: data.slug as string, name: data.name as string, series: (data.series as string | null) ?? null, decks }
+}
+
 interface DeckCardRow {
   id: string
   quantity: number
@@ -161,7 +247,8 @@ interface DeckCardRow {
   is_ace: boolean
   is_signature: boolean
   sort_order: number
-  card_id: number
+  card_id: number | null
+  card_name: string | null
   language: AppLanguage
   cards:
     | {
@@ -181,10 +268,10 @@ interface DeckCardRow {
 
 /** Uma linha por carta e zona. O seed grava a mesma quantidade em cada idioma. */
 function collapseDeckLanguages(
-  cards: AnimeDeckCardView[],
+  cards: ResolvedAnimeDeckCard[],
   language: AppLanguage,
-): AnimeDeckCardView[] {
-  const byKey = new Map<string, AnimeDeckCardView>()
+): ResolvedAnimeDeckCard[] {
+  const byKey = new Map<string, ResolvedAnimeDeckCard>()
   for (const card of cards) {
     const key = `${card.zone}:${card.cardId}`
     const current = byKey.get(key)
@@ -206,12 +293,12 @@ export async function getCharacterDeck(params: {
     .from('character_decks')
     .select(
       `
-      anime_arc, description,
+      anime_arc, description, label,
       characters!inner ( name, slug, animes ( name, slug ) ),
       anime_decks!inner (
         id, name, slug, description, image, created_at, updated_at,
         anime_deck_cards (
-          id, quantity, zone, is_ace, is_signature, sort_order, card_id, language,
+          id, quantity, zone, is_ace, is_signature, sort_order, card_id, card_name, language,
           cards ( id, name, type, card_images )
         )
       )
@@ -265,29 +352,53 @@ export async function getCharacterDeck(params: {
   const anime = character ? asOne(character.animes) : null
   if (!character || !deck || !anime) return null
 
-  const cards = collapseDeckLanguages(
-    (deck.anime_deck_cards ?? []).flatMap((row) => {
-      const card = asOne(row.cards)
-      if (!card) return []
-      const images = parseCardImages(card.card_images)
-      const view: AnimeDeckCardView = {
-        id: row.id,
-        quantity: row.quantity,
-        zone: row.zone,
-        isAce: row.is_ace,
-        isSignature: row.is_signature,
-        sortOrder: row.sort_order,
-        cardId: row.card_id,
-        language: row.language,
-        name: card.name,
-        type: card.type,
-        imageUrl: images[0]?.image_url ?? null,
-        imageUrlSmall: images[0]?.image_url_small ?? images[0]?.image_url ?? null,
-      }
-      return [view]
-    }),
+  const resolved: ResolvedAnimeDeckCard[] = []
+  const unresolvedCards: AnimeDeckCardView[] = []
+  for (const row of deck.anime_deck_cards ?? []) {
+    const base = {
+      id: row.id,
+      quantity: row.quantity,
+      zone: row.zone,
+      isAce: row.is_ace,
+      isSignature: row.is_signature,
+      sortOrder: row.sort_order,
+      language: row.language,
+    }
+    const card = row.card_id === null ? null : asOne(row.cards)
+    if (!card) {
+      // Sem card_id, ou card_id sem carta no catálogo: conta como não catalogada.
+      const cardName = row.card_name ?? ''
+      unresolvedCards.push({
+        ...base,
+        cardId: null,
+        cardName,
+        unresolved: true,
+        name: cardName,
+        type: null,
+        imageUrl: null,
+        imageUrlSmall: null,
+      })
+      continue
+    }
+    const images = parseCardImages(card.card_images)
+    resolved.push({
+      ...base,
+      cardId: row.card_id as number,
+      cardName: row.card_name ?? card.name,
+      unresolved: false,
+      name: card.name,
+      type: card.type,
+      imageUrl: images[0]?.image_url ?? null,
+      imageUrlSmall: images[0]?.image_url_small ?? images[0]?.image_url ?? null,
+    })
+  }
+  const collapsed = collapseDeckLanguages(resolved, params.language)
+  const localized = await fetchLocalizedCards(
+    collapsed.map((card) => card.cardId),
     params.language,
   )
+  const cards = applyLocalizedCards(collapsed, localized)
+  unresolvedCards.sort((a, b) => a.sortOrder - b.sortOrder)
 
   return {
     id: deck.id,
@@ -303,6 +414,9 @@ export async function getCharacterDeck(params: {
     animeSlug: anime.slug,
     arc: data.anime_arc,
     linkDescription: data.description,
+    label: data.label,
     cards,
+    unresolvedCards,
+    unresolvedCount: unresolvedCards.reduce((sum, card) => sum + card.quantity, 0),
   }
 }

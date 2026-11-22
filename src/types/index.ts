@@ -450,7 +450,12 @@ export interface Character {
   japanese_name: string | null
   slug: string
   description: string | null
+  /** Avatar grande */
   image: string | null
+  /** Avatar pequeno */
+  image_small: string | null
+  /** classic | gx | 5ds | zexal | arcv */
+  series: string | null
   is_duelist: boolean
   sort_order: number
   created_at: string
@@ -474,6 +479,8 @@ export interface CharacterDeckLink {
   anime_arc: string | null
   season: string | null
   description: string | null
+  /** Rótulo do deck do personagem: A | B */
+  label: string | null
   is_primary: boolean
   sort_order: number
 }
@@ -488,9 +495,17 @@ export interface CharacterDeckSummary extends AnimeDeck {
   animeArc: string | null
   season: string | null
   linkDescription: string | null
+  label: string | null
   isPrimary: boolean
   sortOrder: number
+  /** Soma de quantity (todas as zonas), incluindo não catalogadas */
   cardCount: number
+  /** Cópias sem correspondência em public.cards (card_id NULL) */
+  unresolvedCount: number
+  /** Soma de quantity por zona */
+  zoneCounts: Record<DeckZone, number>
+  /** Linhas (carta + quantidade) para calcular posse na coleção */
+  lines: Array<{ cardId: number | null; quantity: number }>
 }
 
 export interface CharacterDetail extends Character {
@@ -505,13 +520,20 @@ export interface AnimeDeckCardView {
   isAce: boolean
   isSignature: boolean
   sortOrder: number
-  cardId: number
+  /** null = carta não catalogada em public.cards */
+  cardId: number | null
   language: AppLanguage
+  /** Nome original do import (sempre preenchido) */
+  cardName: string
+  unresolved: boolean
   name: string
   type: string | null
   imageUrl: string | null
   imageUrlSmall: string | null
 }
+
+/** Carta catalogada (cardId garantido) */
+export type ResolvedAnimeDeckCard = AnimeDeckCardView & { cardId: number; unresolved: false }
 
 export interface AnimeDeckDetail extends AnimeDeck {
   characterName: string
@@ -520,6 +542,11 @@ export interface AnimeDeckDetail extends AnimeDeck {
   animeSlug: string
   arc: string | null
   linkDescription: string | null
-  cards: AnimeDeckCardView[]
+  label: string | null
+  /** Cartas catalogadas, uma linha por carta e zona */
+  cards: ResolvedAnimeDeckCard[]
+  /** Cartas não catalogadas (card_id NULL), para "N cartas não catalogadas" */
+  unresolvedCards: AnimeDeckCardView[]
+  unresolvedCount: number
 }
 

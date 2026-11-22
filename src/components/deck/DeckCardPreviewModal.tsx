@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Link } from 'react-router-dom'
 import { Check, ExternalLink, Loader2, Package, X } from 'lucide-react'
 import {
@@ -18,6 +18,8 @@ interface DeckCardPreviewModalProps {
   cardId: number | null
   language: AppLanguage
   onClose: () => void
+  /** Elemento que abriu o modal; recebe o foco ao fechar (Safari não foca botões no clique). */
+  returnFocusRef?: RefObject<HTMLElement | null>
 }
 
 export function DeckCardPreviewModal({
@@ -25,6 +27,7 @@ export function DeckCardPreviewModal({
   cardId,
   language,
   onClose,
+  returnFocusRef,
 }: DeckCardPreviewModalProps) {
   const [viewLanguage, setViewLanguage] = useState<AppLanguage>(language)
   const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
@@ -114,6 +117,44 @@ export function DeckCardPreviewModal({
 
   const images = card ? getPrimaryImage(card) : { full: null, small: null }
   const detailLang = card?.language ?? viewLanguage
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const isOpen = open && cardId != null
+
+  // Foco no diálogo ao abrir, ESC fecha, Tab fica preso e o foco volta ao gatilho ao fechar.
+  useEffect(() => {
+    if (!isOpen) return
+    const previous = (returnFocusRef?.current ?? document.activeElement) as HTMLElement | null
+    closeRef.current?.focus()
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return
+      const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previous?.focus?.()
+    }
+  }, [isOpen, returnFocusRef])
 
   if (!open || cardId == null) return null
 
@@ -126,6 +167,7 @@ export function DeckCardPreviewModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="deck-card-preview-title"
+        ref={dialogRef}
         className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -135,10 +177,12 @@ export function DeckCardPreviewModal({
           </h2>
           <button
             type="button"
+            ref={closeRef}
             onClick={onClose}
-            className="rounded-lg p-1.5 text-[var(--color-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+            aria-label="Fechar"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-[var(--color-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
           >
-            <X className="h-5 w-5" />
+            <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
 
