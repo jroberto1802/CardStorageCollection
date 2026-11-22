@@ -31,3 +31,8 @@ supabase/.temp
 # Maestri agents e avatares-fonte (copiados para public/characters)
 .maestri/
 .decks/avatares/
+
+# E2E (Playwright): sessão salva e relatórios — nunca versionar
+.auth/
+test-results/
+playwright-report/

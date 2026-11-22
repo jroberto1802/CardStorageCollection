@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Bookmark,
@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { RouteFallback } from '@/components/RouteFallback'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   [
@@ -242,7 +243,9 @@ export function AppLayout() {
           wide ? 'max-w-[1600px]' : 'max-w-7xl',
         ].join(' ')}
       >
-        <Outlet />
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, Check, ChevronRight, CircleDashed, X } from 'lucide-react'
+import { CreateDeckModal } from '@/components/characters/CreateDeckModal'
+import { MissingCardsPanel } from '@/components/characters/MissingCardsPanel'
 import { DeckCardPreviewModal } from '@/components/deck/DeckCardPreviewModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import { getCharacterDeck, getCharacterNav, type CharacterNav } from '@/services/characterService'
@@ -12,9 +14,11 @@ import {
   ZONE_ORDER,
   buildCardEntries,
   buildListSearch,
+  buildMissingList,
   describeCardOwnership,
   filterEntries,
   formatDeckProgress,
+  suggestUserDeckName,
   summarizeDeck,
   zoneSummary,
   type OwnershipFilter,
@@ -82,6 +86,9 @@ export function CharacterDeckPage() {
   const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
   const [showUnresolved, setShowUnresolved] = useState(false)
   const triggerRef = useRef<HTMLElement | null>(null)
+  const actionTriggerRef = useRef<HTMLElement | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [missingOpen, setMissingOpen] = useState(false)
 
   const listSearch = buildListSearch({
     serie: searchParams.get('serie'),
@@ -120,6 +127,8 @@ export function CharacterDeckPage() {
     setError(null)
     setShowUnresolved(false)
     setPreviewCardId(null)
+    setCreateOpen(false)
+    setMissingOpen(false)
     async function load() {
       try {
         const data = await getCharacterDeck({ characterSlug: slug as string, deckSlug: deckSlug as string, language })
@@ -159,6 +168,11 @@ export function CharacterDeckPage() {
         effectiveOwned,
       ),
     [deck, effectiveOwned],
+  )
+
+  const missingCopies = useMemo(
+    () => buildMissingList(entries, 'cardmarket').missingCopies,
+    [entries],
   )
 
   const visibleEntries = useMemo(
@@ -254,6 +268,36 @@ export function CharacterDeckPage() {
           </div>
         )}
       </div>
+
+      {hasCards && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              actionTriggerRef.current = e.currentTarget
+              setCreateOpen(true)
+            }}
+            className="min-h-11 rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--color-accent-hover)]"
+          >
+            Criar meu deck a partir deste
+          </button>
+          <button
+            type="button"
+            disabled={!collectionOk || missingCopies === 0}
+            onClick={(e) => {
+              actionTriggerRef.current = e.currentTarget
+              setMissingOpen(true)
+            }}
+            className="min-h-11 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-medium hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {!collectionOk
+              ? 'O que falta · Coleção indisponível'
+              : missingCopies === 0
+                ? 'Você já tem tudo!'
+                : `O que falta (${missingCopies})`}
+          </button>
+        </div>
+      )}
 
       {!hasCards ? (
         <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-12 text-center">
@@ -414,6 +458,26 @@ export function CharacterDeckPage() {
         </>
       )}
 
+      <CreateDeckModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        deckSlug={deck.slug}
+        defaultName={suggestUserDeckName(deck.name, deck.characterName)}
+        language={language}
+        entries={entries}
+        unresolvedCards={deck.unresolvedCards}
+        collectionOk={collectionOk}
+        returnFocusRef={actionTriggerRef}
+      />
+      <MissingCardsPanel
+        open={missingOpen}
+        onClose={() => setMissingOpen(false)}
+        entries={entries}
+        deckName={deck.name}
+        characterName={deck.characterName}
+        unresolvedCount={deck.unresolvedCount}
+        returnFocusRef={actionTriggerRef}
+      />
       <DeckCardPreviewModal
         open={previewCardId != null}
         cardId={previewCardId}

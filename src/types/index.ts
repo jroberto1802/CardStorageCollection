@@ -419,6 +419,22 @@ export interface ImportSyncedDeckResult {
   truncatedByLimit: number
 }
 
+/** Resultado de createUserDeckFromCards; failedAtChunk (1-based) indica falha parcial. */
+export interface CreateUserDeckResult extends ImportSyncedDeckResult {
+  failedAtChunk: number | null
+  /** Cartas (linhas de deck_cards) que deveriam entrar após os limites */
+  plannedRows: number
+}
+
+/** Preço em US$ por fonte (null = sem preço). */
+export interface CardPriceSources {
+  cardmarket: number | null
+  tcgplayer: number | null
+  ebay: number | null
+  amazon: number | null
+  coolstuffinc: number | null
+}
+
 /** Carta popular nos decks da comunidade que o usuário não possui. */
 export interface CommunityMissingCardRank {
   cardId: number
@@ -522,6 +538,8 @@ export interface AnimeDeckCardView {
   sortOrder: number
   /** null = carta não catalogada em public.cards */
   cardId: number | null
+  /** Preços em US$ (card_prices); null em cartas não catalogadas */
+  prices: CardPriceSources | null
   language: AppLanguage
   /** Nome original do import (sempre preenchido) */
   cardName: string

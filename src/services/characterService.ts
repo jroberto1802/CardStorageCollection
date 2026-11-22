@@ -9,7 +9,7 @@ import type {
   DeckZone,
   ResolvedAnimeDeckCard,
 } from '@/types'
-import { parseCardImages } from '@/utils/cardHelpers'
+import { parseCardImages, parseCardPrices } from '@/utils/cardHelpers'
 import { applyLocalizedCards, type LocalizedCard } from '@/utils/characterView'
 
 function asOne<T>(value: T | T[] | null | undefined): T | null {
@@ -197,6 +197,7 @@ async function fetchLocalizedCards(
   for (const row of data) {
     const images = parseCardImages(row.card_images)
     map.set(row.id as number, {
+      language,
       name: row.name as string,
       type: (row.type as string | null) ?? null,
       imageUrl: images[0]?.image_url ?? null,
@@ -204,6 +205,66 @@ async function fetchLocalizedCards(
     })
   }
   return map
+}
+
+export interface DeckProgressRow {
+  characterId: string
+  label: string
+  cardId: number | null
+  quantity: number
+}
+
+/**
+ * Linhas mínimas (carta + quantidade por deck/personagem) para calcular o progresso na lista.
+ * Consulta agregada paginada de anime_deck_cards com o vínculo character_decks embutido
+ * (sem N+1). Opção futura (RPC/view agregada + cache): ver docs/character-progress-notes.md.
+ */
+export async function listDeckProgressRows(): Promise<DeckProgressRow[]> {
+  const pageSize = 1000
+  const select =
+    'card_id, quantity, anime_decks!inner ( character_decks ( character_id, label ) )'
+
+  async function page(from: number, withCount: boolean) {
+    const { data, error, count } = await supabase
+      .from('anime_deck_cards')
+      .select(select, withCount ? { count: 'exact' } : undefined)
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) throw new Error(error.message)
+    return { rows: data ?? [], count: count ?? 0 }
+  }
+
+  const first = await page(0, true)
+  const pages = [first.rows]
+  if (first.count > pageSize) {
+    const offsets: number[] = []
+    for (let from = pageSize; from < first.count; from += pageSize) offsets.push(from)
+    const rest = await Promise.all(offsets.map((from) => page(from, false)))
+    for (const item of rest) pages.push(item.rows)
+  }
+
+  type Raw = {
+    card_id: number | null
+    quantity: number
+    anime_decks:
+      | { character_decks: Array<{ character_id: string; label: string | null }> | null }
+      | Array<{ character_decks: Array<{ character_id: string; label: string | null }> | null }>
+      | null
+  }
+  const out: DeckProgressRow[] = []
+  for (const row of pages.flat() as unknown as Raw[]) {
+    const deck = asOne(row.anime_decks)
+    for (const link of deck?.character_decks ?? []) {
+      if (!link.label) continue
+      out.push({
+        characterId: link.character_id,
+        label: link.label,
+        cardId: row.card_id,
+        quantity: row.quantity,
+      })
+    }
+  }
+  return out
 }
 
 export interface CharacterNav {
@@ -256,12 +317,14 @@ interface DeckCardRow {
         name: string
         type: string | null
         card_images: unknown
+        card_prices?: unknown
       }
     | Array<{
         id: number
         name: string
         type: string | null
         card_images: unknown
+        card_prices?: unknown
       }>
     | null
 }
@@ -299,7 +362,7 @@ export async function getCharacterDeck(params: {
         id, name, slug, description, image, created_at, updated_at,
         anime_deck_cards (
           id, quantity, zone, is_ace, is_signature, sort_order, card_id, card_name, language,
-          cards ( id, name, type, card_images )
+          cards ( id, name, type, card_images, card_prices )
         )
       )
     `,
@@ -371,6 +434,7 @@ export async function getCharacterDeck(params: {
       unresolvedCards.push({
         ...base,
         cardId: null,
+        prices: null,
         cardName,
         unresolved: true,
         name: cardName,
@@ -384,6 +448,7 @@ export async function getCharacterDeck(params: {
     resolved.push({
       ...base,
       cardId: row.card_id as number,
+      prices: parseCardPrices(card.card_prices),
       cardName: row.card_name ?? card.name,
       unresolved: false,
       name: card.name,

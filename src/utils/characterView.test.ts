@@ -9,6 +9,7 @@ import {
   filterCharacters,
   filterEntries,
   formatDeckProgress,
+  normalizeAvatarSrc,
   normalizeText,
   summarizeDeck,
   zoneSummary,
@@ -45,6 +46,15 @@ const chars = [
   character({ name: 'Seto Kaiba', series: 'classic', order: 1 }),
   character({ name: 'Jaden Yuki', series: 'gx', order: 2 }),
 ]
+
+describe('avatar', () => {
+  it('normaliza .png para .webp só em caminhos locais', () => {
+    expect(normalizeAvatarSrc('/characters/grande/GX_JadenYuki.png')).toBe('/characters/grande/GX_JadenYuki.webp')
+    expect(normalizeAvatarSrc('/characters/pequeno/a.webp')).toBe('/characters/pequeno/a.webp')
+    expect(normalizeAvatarSrc('https://cdn.example.com/a.png')).toBe('https://cdn.example.com/a.png')
+    expect(normalizeAvatarSrc(null)).toBeNull()
+  })
+})
 
 describe('lista de personagens', () => {
   it('normaliza acentos e caixa', () => {
@@ -170,9 +180,10 @@ describe('idioma das cartas', () => {
   it('sobrepõe com o idioma atual e mantém en como fallback', () => {
     const out = applyLocalizedCards(
       [base(1, 'Dark Magician'), base(2, 'Kuriboh')],
-      new Map([[1, { name: 'Mago Negro', type: null, imageUrl: 'pt-1', imageUrlSmall: null }]]),
+      new Map([[1, { language: 'pt', name: 'Mago Negro', type: null, imageUrl: 'pt-1', imageUrlSmall: null }]]),
     )
     expect(out[0]).toMatchObject({
+      language: 'pt',
       name: 'Mago Negro',
       type: 'Normal Monster',
       imageUrl: 'pt-1',

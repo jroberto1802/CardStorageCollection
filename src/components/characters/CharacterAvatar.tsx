@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { UserRound } from 'lucide-react'
+import { normalizeAvatarSrc } from '@/utils/characterView'
 
 interface CharacterAvatarProps {
   src: string | null
@@ -9,7 +10,8 @@ interface CharacterAvatarProps {
   rounded?: string
 }
 
-export function CharacterAvatar({ src, size, alt = '', rounded = 'rounded-xl' }: CharacterAvatarProps) {
+export function CharacterAvatar({ src: rawSrc, size, alt = '', rounded = 'rounded-xl' }: CharacterAvatarProps) {
+  const src = normalizeAvatarSrc(rawSrc)
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const showImage = Boolean(src) && failedSrc !== src
 

@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { listCollectionItems } from '@/services/collectionService'
-import { createDeck } from '@/services/deckService'
+import { createDeck, deleteDeck } from '@/services/deckService'
 import { getCardsByIdsWithFallback } from '@/services/catalogService'
 import { getPrimaryImage } from '@/utils/cardHelpers'
 import type {
@@ -8,7 +8,7 @@ import type {
   CollectionItem,
   CommunityMissingCardRank,
   DeckZone,
-  ImportSyncedDeckResult,
+  CreateUserDeckResult,
   SyncedDeck,
   SyncedDeckCardRow,
   SyncedDeckDetail,
@@ -703,46 +703,51 @@ export async function getSyncedDeck(id: string): Promise<SyncedDeckDetail | null
   }
 }
 
-export async function importSyncedDeckToUserDeck(
-  syncedDeckId: string,
-  language: AppLanguage,
-): Promise<ImportSyncedDeckResult> {
-  const detail = await getSyncedDeck(syncedDeckId)
-  if (!detail) throw new Error('Deck da comunidade não encontrado')
+export interface UserDeckCardInput {
+  cardId: number | null | undefined
+  language: AppLanguage | null | undefined
+  zone: DeckZone
+  quantity: number
+}
 
-  const userDeck = await createDeck(language, detail.name)
+export interface PlannedDeckRow {
+  card_id: number
+  language: AppLanguage
+  zone: DeckZone
+  position: number
+}
 
-  const zoneCounts: Record<DeckZone, number> = {
-    main: 0,
-    extra: 0,
-    side: 0,
-  }
+export interface PlannedDeck {
+  rows: PlannedDeckRow[]
+  skippedUnresolved: number
+  cappedCopies: number
+  truncatedByLimit: number
+}
+
+/**
+ * Aplica os limites do Yu-Gi-Oh! (3 cópias por carta, MAX_MAIN/EXTRA/SIDE) e devolve as
+ * linhas de deck_cards a inserir. Cartas sem id/idioma são puladas (não catalogadas).
+ */
+export function planUserDeckRows(cards: UserDeckCardInput[]): PlannedDeck {
+  const zoneCounts: Record<DeckZone, number> = { main: 0, extra: 0, side: 0 }
   const copiesByCard = new Map<number, number>()
-
-  let inserted = 0
+  const rows: PlannedDeckRow[] = []
   let skippedUnresolved = 0
   let cappedCopies = 0
   let truncatedByLimit = 0
 
-  const insertRows: Array<{
-    deck_id: string
-    card_id: number
-    language: AppLanguage
-    zone: DeckZone
-    position: number
-  }> = []
-
-  for (const card of detail.cards) {
-    if (card.card_id == null || !card.language) {
-      skippedUnresolved += card.quantity
+  for (const card of cards) {
+    const quantity = Math.max(0, Math.floor(Number(card.quantity) || 0))
+    if (card.cardId == null || !card.language) {
+      skippedUnresolved += quantity
       continue
     }
 
     const zone = card.zone
     const limit = zoneLimit(zone)
-    let qty = card.quantity
+    let qty = quantity
 
-    const already = copiesByCard.get(card.card_id) ?? 0
+    const already = copiesByCard.get(card.cardId) ?? 0
     const allowedByCopies = Math.max(0, MAX_COPIES_PER_CARD - already)
     if (qty > allowedByCopies) {
       cappedCopies += qty - allowedByCopies
@@ -758,27 +763,73 @@ export async function importSyncedDeckToUserDeck(
     if (qty <= 0) continue
 
     for (let i = 0; i < qty; i += 1) {
-      insertRows.push({
-        deck_id: userDeck.id,
-        card_id: card.card_id,
-        language: card.language,
-        zone,
-        position: zoneCounts[zone],
-      })
+      rows.push({ card_id: card.cardId, language: card.language, zone, position: zoneCounts[zone] })
       zoneCounts[zone] += 1
-      copiesByCard.set(card.card_id, (copiesByCard.get(card.card_id) ?? 0) + 1)
-      inserted += 1
+      copiesByCard.set(card.cardId, (copiesByCard.get(card.cardId) ?? 0) + 1)
     }
   }
 
-  if (insertRows.length > 0) {
-    const chunkSize = 200
-    for (let i = 0; i < insertRows.length; i += chunkSize) {
-      const chunk = insertRows.slice(i, i + chunkSize)
-      const { error } = await supabase.from('deck_cards').insert(chunk)
-      if (error) throw new Error(error.message)
-    }
+  return { rows, skippedUnresolved, cappedCopies, truncatedByLimit }
+}
 
+export const USER_DECK_CHUNK_SIZE = 200
+
+/**
+ * Cria um deck do usuário com as cartas dadas, em lotes de 200.
+ * - Falha total (nenhuma carta entrou): apaga o deck criado e lança erro.
+ * - Falha parcial: mantém o deck e devolve failedAtChunk (1-based) com 'inserted' parcial.
+ */
+export async function createUserDeckFromCards(params: {
+  name: string
+  language: AppLanguage
+  cards: UserDeckCardInput[]
+  onProgress?: (done: number, total: number) => void
+  /** Tamanho do lote de inserção (padrão 200; parametrizável para testes) */
+  chunkSize?: number
+}): Promise<CreateUserDeckResult> {
+  const chunkSize = params.chunkSize ?? USER_DECK_CHUNK_SIZE
+  const plan = planUserDeckRows(params.cards)
+  const total = plan.rows.length
+  const userDeck = await createDeck(params.language, params.name)
+
+  let inserted = 0
+  let failedAtChunk: number | null = null
+  let failureMessage = ''
+  params.onProgress?.(0, total)
+
+  for (let i = 0; i < total; i += chunkSize) {
+    const chunk = plan.rows
+      .slice(i, i + chunkSize)
+      .map((row) => ({ ...row, deck_id: userDeck.id }))
+    const { error } = await supabase.from('deck_cards').insert(chunk)
+    if (error) {
+      failedAtChunk = Math.floor(i / chunkSize) + 1
+      failureMessage = error.message
+      break
+    }
+    inserted += chunk.length
+    params.onProgress?.(inserted, total)
+  }
+
+  if (failedAtChunk !== null && inserted === 0) {
+    const base = failureMessage || 'Falha ao adicionar cartas ao deck'
+    let removed = false
+    for (let attempt = 0; attempt < 2 && !removed; attempt += 1) {
+      try {
+        await deleteDeck(userDeck.id)
+        removed = true
+      } catch {
+        // tenta mais uma vez; se falhar, avisa sobre o deck vazio
+      }
+    }
+    throw new Error(
+      removed
+        ? base
+        : `${base} (um deck vazio pode ter sido criado: ${userDeck.id}; remova-o em Meus decks)`,
+    )
+  }
+
+  if (inserted > 0) {
     await supabase
       .from('decks')
       .update({ updated_at: new Date().toISOString() })
@@ -789,10 +840,31 @@ export async function importSyncedDeckToUserDeck(
     deckId: userDeck.id,
     deckName: userDeck.name,
     inserted,
-    skippedUnresolved,
-    cappedCopies,
-    truncatedByLimit,
+    skippedUnresolved: plan.skippedUnresolved,
+    cappedCopies: plan.cappedCopies,
+    truncatedByLimit: plan.truncatedByLimit,
+    failedAtChunk,
+    plannedRows: total,
   }
+}
+
+export async function importSyncedDeckToUserDeck(
+  syncedDeckId: string,
+  language: AppLanguage,
+): Promise<CreateUserDeckResult> {
+  const detail = await getSyncedDeck(syncedDeckId)
+  if (!detail) throw new Error('Deck da comunidade não encontrado')
+
+  return createUserDeckFromCards({
+    name: detail.name,
+    language,
+    cards: detail.cards.map((card) => ({
+      cardId: card.card_id,
+      language: card.language,
+      zone: card.zone,
+      quantity: card.quantity,
+    })),
+  })
 }
 
 const MISSING_RANK_CACHE_KEY = 'csc-community-missing-rank-v1'

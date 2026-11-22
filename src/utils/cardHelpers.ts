@@ -5,6 +5,7 @@ import type {
   CardCategory,
   CardImage,
   CardImpression,
+  CardPriceSources,
   CardRegion,
   CardSet,
   CatalogFilters,
@@ -629,6 +630,22 @@ export function parseSetPriceUsd(setPrice?: string | null): number | null {
   const value = Number.parseFloat(cleaned)
   if (!Number.isFinite(value) || value < 0) return null
   return value
+}
+
+const PRICE_SOURCES = ['cardmarket', 'tcgplayer', 'ebay', 'amazon', 'coolstuffinc'] as const
+
+/** Lê cards.card_prices (array com um objeto *_price em string) em números US$. */
+export function parseCardPrices(value: unknown): CardPriceSources {
+  const first = Array.isArray(value) ? value[0] : value
+  const record = (first && typeof first === 'object' ? first : {}) as Record<string, unknown>
+  const out = {} as CardPriceSources
+  for (const source of PRICE_SOURCES) {
+    const raw = record[`${source}_price`]
+    const parsed = raw == null ? null : parseSetPriceUsd(String(raw))
+    // "0.00" na API significa sem preço
+    out[source] = parsed != null && parsed > 0 ? parsed : null
+  }
+  return out
 }
 
 export function formatUsd(value: number): string {

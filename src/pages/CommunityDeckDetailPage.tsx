@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { DeckCardPreviewModal } from '@/components/deck/DeckCardPreviewModal'
 import { useSettings } from '@/contexts/SettingsContext'
+import { describeImportResult } from '@/utils/importResult'
 import {
   getSyncedDeck,
   importSyncedDeckToUserDeck,
@@ -109,6 +110,7 @@ export function CommunityDeckDetailPage() {
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [partialDeckId, setPartialDeckId] = useState<string | null>(null)
   const [previewCardId, setPreviewCardId] = useState<number | null>(null)
   const [previewLanguage, setPreviewLanguage] = useState<AppLanguage>(language)
 
@@ -146,22 +148,17 @@ export function CommunityDeckDetailPage() {
     setImporting(true)
     setMessage(null)
     setError(null)
+    setPartialDeckId(null)
     try {
       const result = await importSyncedDeckToUserDeck(deck.id, language)
-      const notes: string[] = []
-      if (result.skippedUnresolved) {
-        notes.push(`${result.skippedUnresolved} sem catálogo`)
+      const outcome = describeImportResult(result)
+      if (outcome.partial) {
+        // Falha parcial: não navega sozinho para um deck incompleto.
+        setError(outcome.message)
+        setPartialDeckId(result.deckId)
+        return
       }
-      if (result.cappedCopies) {
-        notes.push(`${result.cappedCopies} cópias limitadas a 3`)
-      }
-      if (result.truncatedByLimit) {
-        notes.push(`${result.truncatedByLimit} cortadas por limite de zona`)
-      }
-      setMessage(
-        `Importado: ${result.inserted} cartas` +
-          (notes.length ? ` (${notes.join('; ')})` : ''),
-      )
+      setMessage(outcome.message)
       navigate(`/decks/${result.deckId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha ao importar')
@@ -275,8 +272,19 @@ export function CommunityDeckDetailPage() {
       </div>
 
       {error && (
-        <p className="rounded-lg border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 px-3 py-2 text-sm text-red-300">
+        <p
+          role="alert"
+          className="rounded-lg border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 px-3 py-2 text-sm text-red-300"
+        >
           {error}
+          {partialDeckId && (
+            <>
+              {' '}
+              <Link to={`/decks/${partialDeckId}`} className="font-medium underline">
+                Abrir deck
+              </Link>
+            </>
+          )}
         </p>
       )}
       {message && (

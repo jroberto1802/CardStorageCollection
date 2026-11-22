@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// Gera supabase/migrations/016_import_classic_gx_characters.sql a partir de .decks/decks.json
-// e copia os avatares para public/characters/{grande,pequeno}.
+// Gera uma migration de import (personagens, decks e cartas) a partir de .decks/decks.json.
 //
-// Uso: node scripts/build-character-import.mjs [--series First,GX] [--out <sql>]
+// Uso: node scripts/build-character-import.mjs --series First,GX --out supabase/migrations/016_....sql
 //        [--names <cardinfo.json da ygoprodeck>] [--report docs/character-import-report.md]
-//        [--no-avatars]
-// --names é opcional: sem ele, só o SQL é gerado. Com ele, mede o casamento por nome.
-// Sem dependências externas.
+//        [--report-series First,GX,5DS,ZEXAL,Arcv] [--no-sql]
+// --out é obrigatório (nunca sobrescreve uma migration já aplicada por acidente); --no-sql só gera o relatório.
+// --series escolhe as séries do SQL; o relatório cobre --report-series (padrão: todas da fonte).
+// --names é opcional: sem ele não há relatório de casamento. Sem dependências externas.
+// Avatares: public/characters/{grande,pequeno}/*.webp são gerados por scripts/optimize-avatars.mjs.
+//   (já aplicadas: 016 usa .png e a 018 migra para .webp; o app também normaliza a extensão)
+// Slugs: kebab(chave), exceto SLUG_OVERRIDE (personagens repetidos entre séries). Slugs já
+// importados (First/GX) NUNCA mudam.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +24,11 @@ const opt = (name, def) => {
 const flag = (name) => args.includes(`--${name}`)
 
 const seriesList = opt('series', 'First,GX').split(',').map((s) => s.trim()).filter(Boolean)
-const outFile = path.resolve(root, opt('out', 'supabase/migrations/016_import_classic_gx_characters.sql'))
+const outArg = opt('out', null)
+const writeSql = !flag('no-sql')
+if (writeSql && !outArg) throw new Error('Informe --out <arquivo.sql> (ou --no-sql para só o relatório)')
+const outFile = outArg ? path.resolve(root, outArg) : null
+const imageExt = 'webp'
 const namesFile = opt('names', null)
 const reportFile = path.resolve(root, opt('report', 'docs/character-import-report.md'))
 const srcDir = path.join(root, '.decks')
@@ -33,7 +41,16 @@ const SERIES = {
   ZEXAL: { anime: 'yu-gi-oh-zexal', animeName: 'ZEXAL', animeOrder: 4, series: 'zexal' },
   Arcv: { anime: 'yu-gi-oh-arc-v', animeName: 'ARC-V', animeOrder: 5, series: 'arcv' },
 }
-for (const s of seriesList) if (!SERIES[s]) throw new Error(`Série desconhecida: ${s}`)
+const reportSeries = opt('report-series', Object.keys(SERIES).join(',')).split(',').map((s) => s.trim()).filter(Boolean)
+for (const s of [...seriesList, ...reportSeries]) if (!SERIES[s]) throw new Error(`Série desconhecida: ${s}`)
+
+// Personagens que se repetem entre séries: a 2ª ocorrência recebe sufixo da série.
+// (chave da fonte 'Crow2'/'Jack2' em ARC-V; 5D's usa o nome completo.) Chave: '<serie>:<chave>'.
+const SLUG_OVERRIDE = {
+  '5DS:Crow': 'crow-hogan',
+  'Arcv:Crow2': 'crow-hogan-arcv',
+  'Arcv:Jack2': 'jack-atlas-arcv',
+}
 
 // Nomes de exibição corrigidos (a fonte tem grafias divergentes do canônico)
 const NAME_FIX = { 'Jesse Andersen': 'Jesse Anderson' }
@@ -72,11 +89,13 @@ const q = (s) => `'${String(s).replace(/'/g, "''")}'`
 const ZONES = ['main', 'extra', 'side']
 
 const all = JSON.parse(fs.readFileSync(path.join(srcDir, 'decks.json'), 'utf8'))
-const chars = all.filter((p) => seriesList.includes(p.serie))
+const chars = all.filter((p) => seriesList.includes(p.serie) || reportSeries.includes(p.serie))
+const emitted = (p) => seriesList.includes(p.serie)
+const seenSlugs = new Set()
+const seenDeckSlugs = new Set()
 const orderBySeries = {}
 const report = { bySeries: {}, missingAvatars: [], deckRows: [] }
 
-const avatarOut = path.join(root, 'public', 'characters')
 const safeFile = (f) => /^[A-Za-z0-9_.-]+$/.test(f)
 
 let nameSet = null
@@ -93,7 +112,9 @@ const cardBlocks = []
 for (const p of chars) {
   const meta = SERIES[p.serie]
   const order = (orderBySeries[p.serie] = (orderBySeries[p.serie] ?? 0) + 1)
-  const slug = kebab(p.chave)
+  const slug = SLUG_OVERRIDE[`${p.serie}:${p.chave}`] ?? kebab(p.chave)
+  if (seenSlugs.has(slug)) throw new Error(`Slug de personagem duplicado: ${slug}`)
+  seenSlugs.add(slug)
   const name = NAME_FIX[p.personagem] ?? p.personagem
   if (!safeFile(p.arquivo)) throw new Error(`Nome de arquivo inseguro: ${p.arquivo}`)
   const hasBig = fs.existsSync(path.join(srcDir, 'avatares', 'grande', p.arquivo))
@@ -101,22 +122,22 @@ for (const p of chars) {
   if (!hasBig || !hasSmall) {
     report.missingAvatars.push(`${p.personagem} (${p.arquivo}): ${!hasBig ? 'grande ' : ''}${!hasSmall ? 'pequeno' : ''}`.trim())
   }
-  if (!flag('no-avatars')) {
-    for (const [size, ok] of [['grande', hasBig], ['pequeno', hasSmall]]) {
-      if (!ok) continue
-      fs.mkdirSync(path.join(avatarOut, size), { recursive: true })
-      fs.copyFileSync(path.join(srcDir, 'avatares', size, p.arquivo), path.join(avatarOut, size, p.arquivo))
-    }
+  const webp = p.arquivo.replace(/\.png$/i, `.${imageExt}`)
+  if (emitted(p)) {
+    charRows.push(
+      `    (${q(meta.anime)}, ${q(name)}, ${q(slug)}, ${hasBig ? q(`/characters/grande/${webp}`) : 'null'}, ${hasSmall ? q(`/characters/pequeno/${webp}`) : 'null'}, ${q(meta.series)}, ${order})`,
+    )
   }
-  charRows.push(
-    `    (${q(meta.anime)}, ${q(name)}, ${q(slug)}, ${hasBig ? q(`/characters/grande/${p.arquivo}`) : 'null'}, ${hasSmall ? q(`/characters/pequeno/${p.arquivo}`) : 'null'}, ${q(meta.series)}, ${order})`,
-  )
 
   p.decks.forEach((d, di) => {
     const letter = String(d.deck).toUpperCase()
     const deckSlug = `${slug}-${letter.toLowerCase()}`
-    deckRows.push(`    (${q(d.nome)}, ${q(deckSlug)})`)
-    linkRows.push(`    (${q(slug)}, ${q(deckSlug)}, ${q(letter)}, ${letter === 'A'}, ${di})`)
+    if (seenDeckSlugs.has(deckSlug)) throw new Error(`Slug de deck duplicado: ${deckSlug}`)
+    seenDeckSlugs.add(deckSlug)
+    if (emitted(p)) {
+      deckRows.push(`    (${q(d.nome)}, ${q(deckSlug)})`)
+      linkRows.push(`    (${q(slug)}, ${q(deckSlug)}, ${q(letter)}, ${letter === 'A'}, ${di})`)
+    }
 
     const rows = []
     const unmatched = []
@@ -146,7 +167,7 @@ for (const p of chars) {
       serie: p.serie, personagem: name, deck: `${letter} — ${d.nome}`, n, matched, unmatched,
       sums, declared: d.total ?? {}, totalsOk,
     })
-    cardBlocks.push(
+    if (emitted(p)) cardBlocks.push(
       `-- ${name} / ${letter} — ${d.nome} (${n} entradas)\n` +
         `delete from public.anime_deck_cards where deck_id = (select id from public.anime_decks where slug = ${q(deckSlug)});\n` +
         `insert into public.anime_deck_cards (deck_id, card_id, language, quantity, zone, sort_order, art_id, card_name, is_ace)\n` +
@@ -161,9 +182,11 @@ for (const p of chars) {
 
 const animeAllRows = Object.values(SERIES).map((m) => `    (${q(m.animeName)}, ${q(m.anime)}, ${m.animeOrder})`)
 
-const sql = `-- 016: importa personagens e decks (séries: ${seriesList.join(', ')}) de .decks/decks.json.
+const migrationName = outFile ? path.basename(outFile) : ''
+const sql = `-- ${migrationName}: importa personagens e decks (séries: ${seriesList.join(', ')}) de .decks/decks.json.
 -- GERADO por scripts/build-character-import.mjs — não edite à mão; rode o script de novo.
--- Pré-requisitos: 011, 014 e 015 aplicadas. Idempotente (pode reaplicar).
+-- Pré-requisitos: 011 e 015 aplicadas (014 só no primeiro import). Idempotente (pode reaplicar);
+-- só INSERT/upsert e DELETE das cartas dos próprios decks importados — nunca apaga outros dados.
 -- Escopo: animes (5 séries com nome de exibição; personagens só das séries importadas),
 -- characters, anime_decks, character_decks, anime_deck_cards.
 -- Cartas: casadas por NOME em inglês (ignora caixa/acentos/pontuação) com public.cards
@@ -225,8 +248,10 @@ analyze en_cards;
 ${cardBlocks.join('\n')}
 commit;
 `
-fs.mkdirSync(path.dirname(outFile), { recursive: true })
-fs.writeFileSync(outFile, sql)
+if (writeSql) {
+  fs.mkdirSync(path.dirname(outFile), { recursive: true })
+  fs.writeFileSync(outFile, sql)
+}
 
 if (nameSet) {
   const pct = (a, b) => (b ? ((a / b) * 100).toFixed(1) : '0.0')
@@ -235,7 +260,7 @@ if (nameSet) {
     'Gerado por `scripts/build-character-import.mjs --names <cardinfo.json>`. Casamento medido contra a lista pública de nomes da API ygoprodeck ' +
     '(db.ygoprodeck.com/api/v7/cardinfo.php), que aproxima `public.cards` (language=\'en\'); a taxa real depende do conteúdo do banco. ' +
     'Cartas exclusivas do jogo (inexistentes na API) entram como **não catalogadas** (card_id NULL + card_name) — nenhum id é inventado.\n\n'
-  md += `Séries: ${seriesList.join(', ')} · personagens: ${chars.length} · decks: ${report.deckRows.length}\n\n`
+  md += `Séries: ${reportSeries.join(', ')} · personagens: ${chars.length} · decks: ${report.deckRows.length}\n\n`
   md += '## Importadas x não catalogadas por série\n\nNão catalogada = entra em `anime_deck_cards` com `card_id` NULL + `card_name`.\n\n'
   md += '| Série | Decks | Entradas catalogadas | Não catalogadas | % catalogadas | Cópias catalogadas | Cópias não catalogadas | % |\n|---|---|---|---|---|---|---|---|\n'
   const T = { d: 0, e: 0, m: 0, c: 0, cm: 0 }
@@ -254,7 +279,7 @@ if (nameSet) {
     md += `| [${d.serie}] ${d.personagem} ${d.deck} | ${d.sums.main}/${d.declared.main ?? 0} | ${d.sums.extra}/${d.declared.extra ?? 0} | ${d.sums.side}/${d.declared.side ?? 0} | ${d.sums.main + d.sums.extra + d.sums.side} | ${d.unmatched.length} | ${d.totalsOk ? 'ok' : 'DIVERGE'} |\n`
   }
   md += '\n'
-  md += "## Futuro: personagens repetidos entre séries\n\nAlguns personagens aparecem em mais de uma série (ex.: Crow Hogan e Jack Atlas em 5D's e ARC-V). Ao importar essas séries, o slug do personagem (e dos decks <personagem>-a/-b) precisará ser prefixado pela série (ex.: 5ds-crow, arcv-crow2) para não colidir com a unique de characters.slug. Hoje (Clássico e GX) não há colisões. Não implementado.\n\n"
+  md += "## Personagens repetidos entre séries\n\nCrow Hogan e Jack Atlas aparecem em 5D's e ARC-V. Slugs: 5D's `crow-hogan` / `jack-atlas`; ARC-V `crow-hogan-arcv` / `jack-atlas-arcv` (decks `<slug>-a/-b`, únicos). O script aborta se algum slug de personagem ou de deck se repetir. Slugs já importados (Clássico/GX, migration 016) nunca mudam.\n\n## Migrations geradas\n\n- 016: Clássico + GX (`--series First,GX`); 017: 5D's + ZEXAL + ARC-V (`--series 5DS,ZEXAL,Arcv`). Ambas só inserem/atualizam (o DELETE é apenas das cartas dos próprios decks importados, para reaplicar sem duplicar).\n- Avatares: `scripts/optimize-avatars.mjs` gera WebP (pequeno 128px, grande 512px). 016 grava `.png`; a 018 converte para `.webp`.\n\n"
   md += `## Avatares faltantes\n\n${report.missingAvatars.length ? report.missingAvatars.map((x) => `- ${x}`).join('\n') : 'Nenhum: todos os personagens têm avatar grande e pequeno.'}\n\n`
   md += '## Cartas não casadas por deck\n\n'
   for (const d of report.deckRows) {
@@ -266,6 +291,10 @@ if (nameSet) {
   fs.writeFileSync(reportFile, md)
 }
 
-console.log(`SQL: ${path.relative(root, outFile)} (${chars.length} personagens, ${report.deckRows.length} decks)`)
+console.log(
+  writeSql
+    ? `SQL: ${path.relative(root, outFile)} (séries ${seriesList.join(',')}: ${charRows.length} personagens, ${deckRows.length} decks)`
+    : 'SQL não gerado (--no-sql)',
+)
 if (report.missingAvatars.length) console.log('Avatares faltantes:', report.missingAvatars)
 for (const [s, v] of Object.entries(report.bySeries)) console.log(s, nameSet ? `${v.matched}/${v.entries}` : `${v.entries} entradas`)
