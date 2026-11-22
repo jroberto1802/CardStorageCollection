@@ -62,6 +62,15 @@ interface CardImageRow {
   [key: string]: unknown
 }
 
+interface CardSetRow {
+  set_name?: string
+  set_code?: string
+  set_rarity?: string
+  set_rarity_code?: string
+  set_price?: string
+  [key: string]: unknown
+}
+
 function isHostedImageUrl(url: string | undefined | null): boolean {
   if (!url) return false
   // Já espelhada no R2 (URL pública configurada) ou ainda no Storage antigo
@@ -99,7 +108,52 @@ function mergeCardImages(incoming: unknown, existing: unknown): unknown {
   })
 }
 
-function mapCard(card: YgoCard, language: AppLanguage, existingImages?: unknown) {
+function setKey(set: CardSetRow): string {
+  const code = String(set.set_code ?? '').trim().toLowerCase()
+  const rarity = String(set.set_rarity ?? '').trim().toLowerCase()
+  return `${code}||${rarity}`
+}
+
+/**
+ * Une sets da YGO com os já salvos no banco.
+ * - Sets da API atualizam o mesmo set_code+rarity
+ * - Sets só no banco (ex.: cadastrados na mão) são preservados
+ */
+function mergeCardSets(incoming: unknown, existing: unknown): unknown {
+  const incomingList = Array.isArray(incoming)
+    ? (incoming as CardSetRow[]).filter(
+        (item) => item && typeof item === 'object' && typeof item.set_code === 'string',
+      )
+    : []
+  const existingList = Array.isArray(existing)
+    ? (existing as CardSetRow[]).filter(
+        (item) => item && typeof item === 'object' && typeof item.set_code === 'string',
+      )
+    : []
+
+  if (incomingList.length === 0) return existingList.length > 0 ? existingList : incoming
+  if (existingList.length === 0) return incomingList
+
+  const mergedByKey = new Map<string, CardSetRow>()
+
+  for (const set of existingList) {
+    const key = setKey(set)
+    if (!key.startsWith('||')) mergedByKey.set(key, set)
+  }
+
+  for (const set of incomingList) {
+    const key = setKey(set)
+    if (!key.startsWith('||')) mergedByKey.set(key, set)
+  }
+
+  return Array.from(mergedByKey.values())
+}
+
+function mapCard(
+  card: YgoCard,
+  language: AppLanguage,
+  existing?: { card_images?: unknown; card_sets?: unknown },
+) {
   const now = new Date().toISOString()
   return {
     id: card.id,
@@ -118,8 +172,8 @@ function mapCard(card: YgoCard, language: AppLanguage, existingImages?: unknown)
     linkval: card.linkval ?? null,
     linkmarkers: card.linkmarkers ?? null,
     ygoprodeck_url: card.ygoprodeck_url ?? null,
-    card_images: mergeCardImages(card.card_images ?? null, existingImages),
-    card_sets: card.card_sets ?? null,
+    card_images: mergeCardImages(card.card_images ?? null, existing?.card_images),
+    card_sets: mergeCardSets(card.card_sets ?? null, existing?.card_sets),
     card_prices: card.card_prices ?? null,
     banlist_info: card.banlist_info ?? null,
     synced_at: now,
@@ -260,21 +314,27 @@ Deno.serve(async (req) => {
       }
 
       const pageIds = page.map((card) => card.id)
-      const existingImageByKey = new Map<string, unknown>()
+      const existingByKey = new Map<
+        string,
+        { card_images?: unknown; card_sets?: unknown }
+      >()
       if (pageIds.length > 0) {
         const { data: existingRows } = await admin
           .from('cards')
-          .select('id, language, card_images')
+          .select('id, language, card_images, card_sets')
           .eq('language', language)
           .in('id', pageIds)
 
         for (const row of existingRows ?? []) {
-          existingImageByKey.set(`${row.id}:${row.language}`, row.card_images)
+          existingByKey.set(`${row.id}:${row.language}`, {
+            card_images: row.card_images,
+            card_sets: row.card_sets,
+          })
         }
       }
 
       const rows = page.map((card) =>
-        mapCard(card, language, existingImageByKey.get(`${card.id}:${language}`)),
+        mapCard(card, language, existingByKey.get(`${card.id}:${language}`)),
       )
 
       for (let i = 0; i < rows.length; i += UPSERT_BATCH_SIZE) {
