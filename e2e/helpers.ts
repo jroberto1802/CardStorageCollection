@@ -86,3 +86,13 @@ export async function deleteE2EDeck(page: Page, deckId: string) {
   const removed = await page.request.delete(`${base}/rest/v1/decks?id=eq.${deckId}`, { headers })
   return removed.ok()
 }
+
+/**
+ * SEGURANÇA (specs que mockam): registre ANTES dos mocks específicos. Qualquer chamada ao REST que não seja GET
+ * (inclui RPC POST não mockada, insert/update/delete) é ABORTADA; mocks registrados depois têm precedência.
+ */
+export async function guardWrites(page: Page) {
+  await page.route('**/rest/v1/**', (route) =>
+    route.request().method() === 'GET' ? route.continue() : route.abort(),
+  )
+}

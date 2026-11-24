@@ -9,6 +9,7 @@ import {
 } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { clearAllDrafts } from '@/utils/quickEntry'
 
 interface AuthContextValue {
   user: User | null
@@ -55,6 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    clearAllDrafts() // outro login neste navegador não restaura o lote anterior
     await supabase.auth.signOut()
   }, [])
 

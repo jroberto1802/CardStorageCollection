@@ -568,3 +568,43 @@ export interface AnimeDeckDetail extends AnimeDeck {
   unresolvedCount: number
 }
 
+
+/** Impressão de um set (linha de card_printings + dados da carta), usada no cadastro rápido */
+export interface SetPrinting {
+  cardId: number
+  language: AppLanguage
+  name: string
+  type: string | null
+  setCode: string
+  setPrefix: string | null
+  setRegion: string | null
+  setNumber: string | null
+  setName: string
+  setRarity: string
+  setRarityCode: string | null
+  setPrice: number | null
+  imageUrlSmall: string | null
+}
+
+/** Sugestão do autocompletar de sets */
+export interface SetPrefixOption {
+  prefix: string
+  regions: string[]
+  setName: string
+  totalCards: number
+}
+
+export interface BatchCollectionItem {
+  card_id: number
+  language: AppLanguage
+  set_code: string
+  set_name: string
+  set_rarity: string
+  quantity: number
+}
+
+export interface BatchCollectionResult {
+  inserted: number
+  updated: number
+  total_quantity: number
+}

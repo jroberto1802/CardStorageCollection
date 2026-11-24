@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { RouteFallback } from '@/components/RouteFallback'
+import { QuickBatchProvider } from '@/contexts/QuickBatchContext'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   [
@@ -243,9 +244,11 @@ export function AppLayout() {
           wide ? 'max-w-[1600px]' : 'max-w-7xl',
         ].join(' ')}
       >
-        <Suspense fallback={<RouteFallback />}>
-          <Outlet />
-        </Suspense>
+        <QuickBatchProvider>
+          <Suspense fallback={<RouteFallback />}>
+            <Outlet />
+          </Suspense>
+        </QuickBatchProvider>
       </main>
     </div>
   )

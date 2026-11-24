@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { BookOpen, Grid3X3, List, Plus, ScanLine, Search, X } from 'lucide-react'
+import { BookOpen, Grid3X3, List, Plus, ScanLine, Search, X, Zap } from 'lucide-react'
 import { AddToCollectionModal } from '@/components/collection/AddToCollectionModal'
 import { CollectionAlbumView } from '@/components/collection/CollectionAlbumView'
 import { CollectionGridView } from '@/components/collection/CollectionGridView'
@@ -450,10 +450,17 @@ export function CollectionPage() {
             <ScanLine className="h-4 w-4 text-[var(--color-accent)]" />
             Escanear carta
           </Link>
+          <Link
+            to="/collection/rapido"
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[var(--color-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-text)] transition hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+          >
+            <Zap className="h-4 w-4 text-[var(--color-accent)]" />
+            Entrada rápida
+          </Link>
           <button
             type="button"
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)]"
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--color-accent-hover)]"
           >
             <Plus className="h-4 w-4" />
             Adicionar carta

@@ -29,6 +29,7 @@ import {
 } from '@/services/imageSyncService'
 import type { AppLanguage, Card, CardImage, CardSet, CollectionItem } from '@/types'
 import { getUsdBrlRate } from '@/services/currencyService'
+import { CardUsageSection } from '@/components/characters/CardUsageSection'
 import {
   buildCardDetailPath,
   convertUsdToBrl,
@@ -80,6 +81,7 @@ export function CardDetailPage() {
 
   const [ownedItems, setOwnedItems] = useState<CollectionItem[]>([])
   const [collectionLoading, setCollectionLoading] = useState(false)
+  const [ownedFailed, setOwnedFailed] = useState(false)
   const [collectionBusyId, setCollectionBusyId] = useState<string | null>(null)
   const [collectionMessage, setCollectionMessage] = useState<string | null>(null)
   const [availableLanguages, setAvailableLanguages] = useState<AppLanguage[]>([])
@@ -275,11 +277,15 @@ export function CardDetailPage() {
 
       setCollectionLoading(true)
       setCollectionMessage(null)
+      setOwnedFailed(false)
       try {
         const items = await listCollectionItemsByCardId(card.id)
         if (mounted) setOwnedItems(items)
       } catch {
-        if (mounted) setOwnedItems([])
+        if (mounted) {
+          setOwnedItems([])
+          setOwnedFailed(true)
+        }
       } finally {
         if (mounted) setCollectionLoading(false)
       }
@@ -1113,6 +1119,16 @@ export function CardDetailPage() {
               </div>
             )}
           </section>
+
+          <CardUsageSection
+            key={card.id}
+            cardId={card.id}
+            ownedCopies={
+              collectionLoading || ownedFailed
+                ? null
+                : ownedItems.reduce((sum, item) => sum + item.quantity, 0)
+            }
+          />
         </div>
       </div>
     </div>

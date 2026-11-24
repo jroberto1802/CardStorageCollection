@@ -474,3 +474,136 @@ export function sortCharacters<T extends Pick<CharacterListItem, 'id' | 'name'>>
   }
   return copy.sort(alpha)
 }
+
+// ---------------------------------------------------------------------------
+// "Usada por personagens": consulta reversa carta -> decks (agrupamento puro)
+// ---------------------------------------------------------------------------
+
+/** Uma linha de anime_deck_cards já achatada com o deck/personagem (uma por idioma/zona). */
+export interface CardUsageRow {
+  deckId: string
+  deckSlug: string
+  deckName: string
+  label: string | null
+  characterSlug: string
+  characterName: string
+  series: string | null
+  imageSmall: string | null
+  /** nome de exibição do anime/série (Clássico, GX, 5D's...) */
+  seriesName?: string | null
+  seriesOrder: number
+  zone: DeckZone
+  quantity: number
+  language: string
+}
+
+export interface CardUsageZone {
+  zone: DeckZone
+  quantity: number
+}
+
+export interface CardUsageDeck {
+  deckId: string
+  deckSlug: string
+  deckName: string
+  label: string | null
+  zones: CardUsageZone[]
+  /** Cópias exigidas pelo deck (soma das zonas) */
+  required: number
+}
+
+export interface CardUsageCharacter {
+  slug: string
+  name: string
+  series: string | null
+  /** nome de exibição do anime/série; use no lugar do slug cru */
+  seriesName: string | null
+  imageSmall: string | null
+  seriesOrder: number
+  decks: CardUsageDeck[]
+}
+
+export interface CardUsage {
+  characters: CardUsageCharacter[]
+  deckCount: number
+  characterCount: number
+  summary: string
+}
+
+export function formatUsageSummary(deckCount: number, characterCount: number): string {
+  const decks = deckCount === 1 ? '1 deck' : `${deckCount} decks`
+  const characters = characterCount === 1 ? '1 personagem' : `${characterCount} personagens`
+  return `Usada em ${decks} de ${characters}`
+}
+
+/**
+ * Agrupa por personagem. Dedupe por (personagem, deck, zona): o seed grava uma linha por idioma com a
+ * mesma quantidade, então fica a maior. Ordem: série (animes.sort_order), personagem (A–Z), deck (A/B),
+ * zona (main, extra, side).
+ */
+export function groupCardUsage(rows: CardUsageRow[]): CardUsage {
+  const byCharacter = new Map<string, CardUsageCharacter>()
+  const zoneByKey = new Map<string, CardUsageZone>()
+
+  for (const row of rows) {
+    if (!(row.quantity > 0)) continue
+    let character = byCharacter.get(row.characterSlug)
+    if (!character) {
+      character = {
+        slug: row.characterSlug,
+        name: row.characterName,
+        series: row.series,
+        seriesName: row.seriesName ?? null,
+        imageSmall: row.imageSmall,
+        seriesOrder: row.seriesOrder,
+        decks: [],
+      }
+      byCharacter.set(row.characterSlug, character)
+    }
+    let deck = character.decks.find((d) => d.deckId === row.deckId)
+    if (!deck) {
+      deck = { deckId: row.deckId, deckSlug: row.deckSlug, deckName: row.deckName, label: row.label, zones: [], required: 0 }
+      character.decks.push(deck)
+    }
+    const zoneKey = `${row.characterSlug}|${row.deckId}|${row.zone}`
+    const existing = zoneByKey.get(zoneKey)
+    if (existing) {
+      existing.quantity = Math.max(existing.quantity, row.quantity)
+    } else {
+      const zone: CardUsageZone = { zone: row.zone, quantity: row.quantity }
+      zoneByKey.set(zoneKey, zone)
+      deck.zones.push(zone)
+    }
+  }
+
+  const characters = [...byCharacter.values()].sort(
+    (a, b) => a.seriesOrder - b.seriesOrder || a.name.localeCompare(b.name, 'pt-BR'),
+  )
+  let deckCount = 0
+  for (const character of characters) {
+    for (const deck of character.decks) {
+      deck.zones.sort((a, b) => ZONE_ORDER.indexOf(a.zone) - ZONE_ORDER.indexOf(b.zone) || b.quantity - a.quantity)
+      deck.required = deck.zones.reduce((sum, z) => sum + z.quantity, 0)
+    }
+    character.decks.sort(
+      (a, b) => (a.label ?? '').localeCompare(b.label ?? '') || a.deckName.localeCompare(b.deckName, 'pt-BR'),
+    )
+    deckCount += character.decks.length
+  }
+  return { characters, deckCount, characterCount: characters.length, summary: formatUsageSummary(deckCount, characters.length) }
+}
+
+/** Posse da carta frente ao que o deck exige: mesmo cardOwnershipStatus da página do deck. */
+export function usageDeckStatus(deck: Pick<CardUsageDeck, 'required'>, ownedCopies: number): OwnershipStatus {
+  return cardOwnershipStatus(Math.min(deck.required, Math.max(0, ownedCopies)), deck.required)
+}
+
+/** Status agregado do personagem: pior caso entre os decks que usam a carta (completo só se todos). */
+export function usageCharacterStatus(character: CardUsageCharacter, ownedCopies: number): OwnershipStatus {
+  const statuses = character.decks.map((d) => usageDeckStatus(d, ownedCopies))
+  if (statuses.every((s) => s === 'complete')) return 'complete'
+  if (statuses.every((s) => s === 'missing')) return 'missing'
+  return 'partial'
+}
+
+export const USAGE_PREVIEW_LIMIT = 8

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQuickBatch } from '@/contexts/QuickBatchContext'
+import { additionFromImpression } from '@/utils/quickEntry'
 import { Link } from 'react-router-dom'
 import {
   BookmarkPlus,
@@ -28,6 +30,7 @@ import type { AppLanguage } from '@/types'
 import { languageLabel } from '@/utils/cardHelpers'
 
 export function CardScannerPage() {
+  const { state: batch, addFromScanner } = useQuickBatch()
   const [ocrText, setOcrText] = useState('')
   const [candidates, setCandidates] = useState<string[]>([])
   const [setCodes, setSetCodes] = useState<string[]>([])
@@ -234,6 +237,21 @@ export function CardScannerPage() {
     setArtPreview(null)
     setFeedback('Pronto para escanear outra carta.')
     setError(null)
+  }
+
+  /**
+   * Scanner -> lote: a impressão sugerida já foi resolvida pelo catálogo (o set_code lido entrou na busca),
+   * então entra direto no lote com carta + set_code + raridade dessa impressão, SEM exigir set ativo.
+   * Sem set_code ("—") não dá para cadastrar em lote: use o "Adicionar" tradicional.
+   */
+  function handleAddToBatch(item: ScannerSuggestion['item']) {
+    const addition = additionFromImpression(item)
+    if (!addition) {
+      setFeedback('Esta impressão não tem código de set; use "Adicionar" para escolher o set.')
+      return
+    }
+    addFromScanner(addition)
+    setFeedback(`Adicionada ao lote: ${item.name} (${item.setCode}).`)
   }
 
   function handleSelectMatch(item: ScannerSuggestion['item']) {
@@ -574,6 +592,16 @@ export function CardScannerPage() {
                         Adicionar
                       </span>
                     </button>
+                    <div className="px-4 pb-3">
+                      <button
+                        type="button"
+                        onClick={() => handleAddToBatch(row.item)}
+                        aria-label={`Adicionar ao lote: ${row.item.name} ${row.item.setCode}`}
+                        className="min-h-11 w-full rounded-lg border border-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+                      >
+                        Adicionar ao lote
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -581,6 +609,16 @@ export function CardScannerPage() {
           </div>
         </section>
       </div>
+
+      {batch.lines.length > 0 && (
+        <Link
+          to="/collection/rapido"
+          aria-label={`Revisar lote com ${batch.lines.length} cartas`}
+          className="fixed right-4 bottom-4 z-40 inline-flex min-h-11 items-center rounded-full bg-[var(--color-accent)] px-5 text-sm font-semibold text-white shadow-xl"
+        >
+          Lote ({batch.lines.length})
+        </Link>
+      )}
 
       <AddToCollectionModal
         open={modalOpen}

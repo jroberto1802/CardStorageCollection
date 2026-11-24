@@ -3,6 +3,8 @@ import type {
   AddToCollectionInput,
   AlbumSlot,
   AppLanguage,
+  BatchCollectionItem,
+  BatchCollectionResult,
   CollectionItem,
   CollectionItemWithCard,
   CollectionSetOption,
@@ -204,6 +206,77 @@ export async function addToCollection(
   }
 
   throw new Error(formatCollectionError(lastError ?? 'Falha ao adicionar à coleção'))
+}
+
+export const BATCH_CHUNK_SIZE = 500
+
+/** Falha no meio do lote: informa o que já foi gravado (cada chunk é transacional). */
+export class BatchCollectionError extends Error {
+  savedItems: number
+  savedChunks: number
+  totalChunks: number
+  /** Itens (já somados) que NÃO foram gravados: reenvie só estes (a RPC soma; reenviar tudo duplicaria) */
+  remainingItems: BatchCollectionItem[]
+
+  constructor(
+    message: string,
+    savedItems: number,
+    savedChunks: number,
+    totalChunks: number,
+    remainingItems: BatchCollectionItem[] = [],
+  ) {
+    super(message)
+    this.name = 'BatchCollectionError'
+    this.savedItems = savedItems
+    this.savedChunks = savedChunks
+    this.totalChunks = totalChunks
+    this.remainingItems = remainingItems
+  }
+}
+
+/**
+ * Cadastro em lote via RPC add_collection_items_batch (sem N round trips): 1 chamada por até 500 itens.
+ * Duplicatas (mesma carta + set_code + raridade) são somadas antes de enviar. O user_id nunca é enviado:
+ * a RPC usa auth.uid(). Cada chunk é transacional; se um chunk falhar, lança BatchCollectionError com o
+ * que já foi gravado (para lotes <= 500 itens é tudo ou nada).
+ */
+export async function addCollectionItemsBatch(
+  items: BatchCollectionItem[],
+): Promise<BatchCollectionResult> {
+  const merged = new Map<string, BatchCollectionItem>()
+  for (const item of items) {
+    const rarity = item.set_rarity === '—' ? '' : (item.set_rarity ?? '').trim()
+    const key = `${item.card_id}|${item.set_code.trim()}|${rarity}`
+    const current = merged.get(key)
+    if (current) current.quantity = Math.min(999, current.quantity + item.quantity) // a RPC rejeita o lote inteiro acima de 999
+    else merged.set(key, { ...item, set_code: item.set_code.trim(), set_rarity: rarity })
+  }
+  const list = [...merged.values()]
+  const total: BatchCollectionResult = { inserted: 0, updated: 0, total_quantity: 0 }
+  if (list.length === 0) return total
+
+  const chunks: BatchCollectionItem[][] = []
+  for (let i = 0; i < list.length; i += BATCH_CHUNK_SIZE) chunks.push(list.slice(i, i + BATCH_CHUNK_SIZE))
+
+  let savedChunks = 0
+  for (const chunk of chunks) {
+    const { data, error } = await supabase.rpc('add_collection_items_batch', { p_items: chunk })
+    if (error) {
+      throw new BatchCollectionError(
+        formatCollectionError(error.message),
+        total.inserted + total.updated,
+        savedChunks,
+        chunks.length,
+        chunks.slice(savedChunks).flat(),
+      )
+    }
+    const result = (data ?? {}) as Partial<BatchCollectionResult>
+    total.inserted += Number(result.inserted ?? 0)
+    total.updated += Number(result.updated ?? 0)
+    total.total_quantity += Number(result.total_quantity ?? 0)
+    savedChunks++
+  }
+  return total
 }
 
 function formatCollectionError(message: string): string {

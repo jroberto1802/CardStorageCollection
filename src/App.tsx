@@ -28,6 +28,7 @@ const CommunityDecksPage = lazy(() =>
 const CommunityDeckDetailPage = lazy(() =>
   import('@/pages/CommunityDeckDetailPage').then((m) => ({ default: m.CommunityDeckDetailPage })),
 )
+const QuickEntryPage = lazy(() => import('@/pages/QuickEntryPage').then((m) => ({ default: m.QuickEntryPage })))
 const CardScannerPage = lazy(() => import('@/pages/CardScannerPage').then((m) => ({ default: m.CardScannerPage })))
 
 export default function App() {
@@ -44,6 +45,7 @@ export default function App() {
                   <Route path="/" element={<HomePage />} />
                   <Route path="/cards/:cardId" element={<CardDetailPage />} />
                   <Route path="/collection" element={<CollectionPage />} />
+                  <Route path="/collection/rapido" element={<QuickEntryPage />} />
                   <Route path="/scanner" element={<CardScannerPage />} />
                   <Route path="/community" element={<CommunityDecksPage />} />
                   <Route

@@ -10,7 +10,13 @@ import type {
   ResolvedAnimeDeckCard,
 } from '@/types'
 import { parseCardImages, parseCardPrices } from '@/utils/cardHelpers'
-import { applyLocalizedCards, type LocalizedCard } from '@/utils/characterView'
+import {
+  applyLocalizedCards,
+  groupCardUsage,
+  type CardUsage,
+  type CardUsageRow,
+  type LocalizedCard,
+} from '@/utils/characterView'
 
 function asOne<T>(value: T | T[] | null | undefined): T | null {
   if (Array.isArray(value)) return value[0] ?? null
@@ -484,4 +490,81 @@ export async function getCharacterDeck(params: {
     unresolvedCards,
     unresolvedCount: unresolvedCards.reduce((sum, card) => sum + card.quantity, 0),
   }
+}
+
+interface UsageRow {
+  zone: DeckZone
+  quantity: number
+  language: string
+  anime_decks:
+    | {
+        id: string
+        slug: string
+        name: string
+        character_decks: UsageLink | UsageLink[] | null
+      }
+    | Array<{ id: string; slug: string; name: string; character_decks: UsageLink | UsageLink[] | null }>
+    | null
+}
+
+interface UsageCharacter {
+  slug: string
+  name: string
+  series: string | null
+  image_small: string | null
+  animes: { name: string; sort_order: number } | Array<{ name: string; sort_order: number }> | null
+}
+
+interface UsageLink {
+  label: string | null
+  characters: UsageCharacter | UsageCharacter[] | null
+}
+
+/**
+ * Consulta reversa: em quais decks de personagens a carta aparece (agrupado por personagem).
+ * Usa o índice anime_deck_cards(card_id) (migration 021).
+ */
+export async function getCardUsageInDecks(cardId: number): Promise<CardUsage> {
+  const { data, error } = await supabase
+    .from('anime_deck_cards')
+    .select(
+      `
+      zone, quantity, language,
+      anime_decks!inner (
+        id, slug, name,
+        character_decks ( label, characters ( slug, name, series, image_small, animes ( name, sort_order ) ) )
+      )
+    `,
+    )
+    .eq('card_id', cardId)
+    .limit(1000)
+
+  if (error) throw new Error(error.message)
+
+  const rows: CardUsageRow[] = []
+  for (const row of (data ?? []) as unknown as UsageRow[]) {
+    const deck = asOne(row.anime_decks)
+    if (!deck) continue
+    const links = Array.isArray(deck.character_decks) ? deck.character_decks : deck.character_decks ? [deck.character_decks] : []
+    for (const link of links) {
+      const character = asOne(link.characters)
+      if (!character) continue
+      rows.push({
+        deckId: deck.id,
+        deckSlug: deck.slug,
+        deckName: deck.name,
+        label: link.label,
+        characterSlug: character.slug,
+        characterName: character.name,
+        series: character.series,
+        seriesName: asOne(character.animes)?.name ?? null,
+        imageSmall: character.image_small,
+        seriesOrder: asOne(character.animes)?.sort_order ?? Number.MAX_SAFE_INTEGER,
+        zone: row.zone,
+        quantity: row.quantity,
+        language: row.language,
+      })
+    }
+  }
+  return groupCardUsage(rows)
 }
